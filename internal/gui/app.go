@@ -186,6 +186,11 @@ func (a *App) buildStatusBar() fyne.CanvasObject {
 }
 
 func (a *App) refreshStatus() {
+	// May be called before the status bar or a file exists (e.g. the mode
+	// Select fires its callback during construction, or in the empty state).
+	if a.statusMode == nil || a.sess == nil || a.idx == nil || a.view == nil {
+		return
+	}
 	m := a.sess.Mode()
 	a.statusMode.SetText("Mode: " + m.String())
 	a.statusRows.SetText(fmt.Sprintf("Rows: %d shown / %d total", a.view.Len(), a.idx.RowCount()))
