@@ -1,0 +1,11 @@
+# Build artifacts
+/tlx
+/tlx-*
+/*.exe
+/dist/
+
+# Annotation sidecars written next to opened CSVs
+*.tlx.json
+
+# Local, machine-specific Claude settings
+.claude/settings.local.json
