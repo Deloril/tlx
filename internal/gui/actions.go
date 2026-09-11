@@ -221,6 +221,7 @@ func (a *App) openFile() {
 			if err := sess.Load(); err != nil {
 				a.showError(err)
 			}
+			sess.SetMode(a.startMode)
 			a.reloadWith(idx, sess)
 		}, a.win)
 	}
@@ -252,7 +253,7 @@ func (a *App) export() {
 }
 
 func (a *App) confirmIfDirty(then func()) {
-	if !a.sess.Dirty() {
+	if a.sess == nil || !a.sess.Dirty() {
 		then()
 		return
 	}

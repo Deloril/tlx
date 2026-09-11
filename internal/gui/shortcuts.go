@@ -10,7 +10,12 @@ func (a *App) registerShortcuts() {
 
 	add := func(key fyne.KeyName, mod fyne.KeyModifier, fn func()) {
 		c.AddShortcut(&desktop.CustomShortcut{KeyName: key, Modifier: mod},
-			func(fyne.Shortcut) { fn() })
+			func(fyne.Shortcut) {
+				if a.idx == nil { // no file loaded yet
+					return
+				}
+				fn()
+			})
 	}
 
 	add(fyne.KeyF, fyne.KeyModifierControl, func() { a.win.Canvas().Focus(a.search) })
@@ -21,7 +26,7 @@ func (a *App) registerShortcuts() {
 	// Bare-key shortcuts fire only when the search box is not focused, so typing
 	// a filter never triggers them.
 	c.SetOnTypedKey(func(ev *fyne.KeyEvent) {
-		if a.searchFocused() {
+		if a.idx == nil || a.searchFocused() {
 			return
 		}
 		switch ev.Name {

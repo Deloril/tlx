@@ -53,23 +53,40 @@ type App struct {
 
 	selRow int // selected view row, -1 if none
 	selCol int // selected table column, -1 if none
+
+	startMode model.Mode // mode applied to files opened via the dialog
 }
 
-// New builds an explorer for an already-opened index and session.
-func New(idx *model.Index, sess *model.Session) *App {
+// New builds an explorer with no file loaded yet. Call OpenInitial to load one,
+// or let the user open one from the toolbar; either way Run shows the window.
+func New() *App {
 	a := &App{
-		fyne:   app.NewWithID("nz.timeline.explorer"),
-		idx:    idx,
-		sess:   sess,
-		view:   model.NewView(idx, sess),
-		selRow: -1,
-		selCol: -1,
+		fyne:      app.NewWithID("nz.timeline.explorer"),
+		selRow:    -1,
+		selCol:    -1,
+		startMode: model.ReadOnly,
 	}
-	a.win = a.fyne.NewWindow("Timeline explorer — " + idx.Path())
-	a.buildColumns()
-	a.buildUI()
+	a.win = a.fyne.NewWindow("Timeline explorer")
+	a.win.Resize(fyne.NewSize(1280, 760))
+	a.win.SetCloseIntercept(a.onClose)
 	a.registerShortcuts()
+	a.showPlaceholder()
 	return a
+}
+
+// SetStartMode sets the mode used for files opened through the file dialog.
+func (a *App) SetStartMode(m model.Mode) { a.startMode = m }
+
+// OpenInitial loads an already-opened index and session into the window.
+func (a *App) OpenInitial(idx *model.Index, sess *model.Session) {
+	a.reloadWith(idx, sess)
+}
+
+// showPlaceholder renders the empty state with an Open button.
+func (a *App) showPlaceholder() {
+	open := widget.NewButtonWithIcon("Open CSV…", theme.FolderOpenIcon(), a.openFile)
+	hint := widget.NewLabel("Open a forensic CSV timeline to begin.")
+	a.win.SetContent(container.NewCenter(container.NewVBox(hint, container.NewCenter(open))))
 }
 
 func (a *App) buildColumns() {
@@ -204,6 +221,5 @@ var tagHighlight = color.NRGBA{R: 0xF6, G: 0xD8, B: 0x8A, A: 0x55}
 
 // Run shows the window and blocks until it closes.
 func (a *App) Run() {
-	a.win.SetCloseIntercept(a.onClose)
 	a.win.ShowAndRun()
 }
