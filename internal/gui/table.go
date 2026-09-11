@@ -7,24 +7,84 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
 
 	"timeline-engine/internal/model"
 )
 
-func (a *App) newTable() *widget.Table {
-	t := widget.NewTable(
-		func() (int, int) { return a.view.Len(), len(a.visible) },
-		func() fyne.CanvasObject {
-			bg := canvas.NewRectangle(color.Transparent)
-			lbl := widget.NewLabel("")
-			lbl.Truncation = fyne.TextTruncateEllipsis
-			return container.NewStack(bg, lbl)
-		},
-		func(id widget.TableCellID, o fyne.CanvasObject) {
-			a.updateCell(id, o)
-		},
+// bigTable wraps widget.Table to dodge a Fyne memory blow-up on huge row counts.
+//
+// Fyne's table creates one separator object (~0.5 KB) per row the first time it
+// lays out, and if that first layout runs while the table's content height is
+// still zero it uses the full row count instead of the visible window. On a
+// 2M-row file that is ~1 GB of separators that never get freed, and every later
+// canvas repaint walks them — which is why even opening a dropdown was slow.
+//
+// We report zero rows until the table has a real on-screen height (the exact
+// condition that avoids the blow-up), then force one refresh so the rows appear.
+// Memory then stays flat (~180 MB) regardless of row count.
+type bigTable struct {
+	widget.Table
+	rowCount func() int // real row count once we are sized
+	cols     func() int // column count
+	onLeave  func()     // called when the pointer leaves the table
+	primed   bool
+	lastPos  fyne.Position
+}
+
+func newBigTable(rowCount, cols func() int) *bigTable {
+	b := &bigTable{rowCount: rowCount, cols: cols}
+	b.Length = func() (int, int) {
+		if b.Size().Height <= 1 {
+			return 0, b.cols()
+		}
+		return b.rowCount(), b.cols()
+	}
+	b.ExtendBaseWidget(b)
+	return b
+}
+
+// Resize primes the first real layout so rows appear once the widget is sized.
+func (b *bigTable) Resize(s fyne.Size) {
+	b.Table.Resize(s)
+	if !b.primed && s.Height > 1 {
+		b.primed = true
+		b.Refresh()
+	}
+}
+
+// MouseMoved records the cursor so hover callbacks can place a tooltip without
+// the O(row) findY the table uses for scrolling.
+func (b *bigTable) MouseMoved(e *desktop.MouseEvent) {
+	b.lastPos = e.AbsolutePosition // canvas-relative, matches the overlay layer
+	b.Table.MouseMoved(e)
+}
+
+// MouseOut clears any hover tooltip.
+func (b *bigTable) MouseOut() {
+	if b.onLeave != nil {
+		b.onLeave()
+	}
+	b.Table.MouseOut()
+}
+
+func (a *App) newTable() *bigTable {
+	t := newBigTable(
+		func() int { return a.view.Len() },
+		func() int { return len(a.visible) },
 	)
+	t.CreateCell = func() fyne.CanvasObject {
+		bg := canvas.NewRectangle(color.Transparent)
+		lbl := widget.NewLabel("")
+		lbl.Truncation = fyne.TextTruncateEllipsis
+		entry := newInlineEntry()
+		entry.Hide()
+		return container.NewStack(bg, lbl, entry)
+	}
+	t.UpdateCell = func(id widget.TableCellID, o fyne.CanvasObject) {
+		a.updateCell(id, o)
+	}
 	t.ShowHeaderRow = true
 	t.CreateHeader = func() fyne.CanvasObject {
 		b := widget.NewButton("", nil)
@@ -36,9 +96,13 @@ func (a *App) newTable() *widget.Table {
 		a.updateHeader(id, o)
 	}
 	t.OnSelected = func(id widget.TableCellID) {
-		a.selRow, a.selCol = id.Row, id.Col
-		a.showDetail(a.view.Master(id.Row))
+		a.onCellSelected(id)
 	}
+	// Show the full contents of a truncated cell on hover.
+	t.OnHighlighted = func(id widget.TableCellID) {
+		a.hoverCell(id, t.lastPos)
+	}
+	t.onLeave = a.hideTooltip
 	for i, ci := range a.visible {
 		t.SetColumnWidth(i, a.cols[ci].width)
 	}
@@ -47,29 +111,53 @@ func (a *App) newTable() *widget.Table {
 
 func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	stack, ok := o.(*fyne.Container)
-	if !ok || len(stack.Objects) < 2 {
+	if !ok || len(stack.Objects) < 3 {
 		return
 	}
 	bg, _ := stack.Objects[0].(*canvas.Rectangle)
 	lbl, _ := stack.Objects[1].(*widget.Label)
-	if lbl == nil {
+	entry, _ := stack.Objects[2].(*inlineEntry)
+	if lbl == nil || entry == nil {
 		return
 	}
 	if id.Col < 0 || id.Col >= len(a.visible) || id.Row < 0 || id.Row >= a.view.Len() {
 		lbl.SetText("")
+		entry.Hide()
+		lbl.Show()
 		return
 	}
 	master := a.view.Master(id.Row)
 	ref := a.cols[a.visible[id.Col]].ref
-	lbl.SetText(oneLine(a.valueOf(master, ref)))
+	val := a.valueOf(master, ref)
+
+	// Inline edit: this exact cell is being edited and the column is editable.
+	if a.editing && id.Row == a.editRow && id.Col == a.editCol && a.cellEditable(ref) {
+		lbl.Hide()
+		entry.SetText(val)
+		entry.onCommit = func(s string) { a.commitInlineEdit(master, ref, s) }
+		entry.onCancel = func() { a.cancelInlineEdit() }
+		entry.Show()
+		if !a.editFocused {
+			a.editFocused = true
+			if c := a.win.Canvas(); c != nil {
+				c.Focus(entry)
+			}
+		}
+	} else {
+		entry.Hide()
+		lbl.SetText(oneLine(val))
+		lbl.Show()
+	}
 
 	if bg != nil {
+		want := color.Color(color.Transparent)
 		if a.rowAnnotated(master) {
-			bg.FillColor = tagHighlight
-		} else {
-			bg.FillColor = color.Transparent
+			want = tagHighlight
 		}
-		bg.Refresh()
+		if bg.FillColor != want {
+			bg.FillColor = want
+			bg.Refresh()
+		}
 	}
 }
 
@@ -151,6 +239,7 @@ func (a *App) clearSelection() {
 		a.table.UnselectAll()
 	}
 	a.selRow, a.selCol = -1, -1
+	a.cancelInlineEdit()
 }
 
 // oneLine collapses embedded newlines so a multi-line Summary shows as a single
@@ -159,6 +248,7 @@ func oneLine(s string) string {
 	if strings.IndexByte(s, '\n') < 0 && strings.IndexByte(s, '\r') < 0 {
 		return s
 	}
-	r := strings.NewReplacer("\r\n", " ⏎ ", "\n", " ⏎ ", "\r", " ⏎ ")
-	return r.Replace(s)
+	return newlineReplacer.Replace(s)
 }
+
+var newlineReplacer = strings.NewReplacer("\r\n", " ⏎ ", "\n", " ⏎ ", "\r", " ⏎ ")

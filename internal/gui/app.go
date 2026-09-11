@@ -38,9 +38,10 @@ type App struct {
 	visible   []int           // indices into cols that are currently shown
 	sortState []model.SortKey // mirror of view sort keys, for header arrows
 
-	table  *widget.Table
+	table  *bigTable
 	detail *fyne.Container
 	scroll *container.Scroll
+	split  *container.Split
 
 	search     *widget.Entry
 	modeSelect *widget.Select
@@ -54,6 +55,19 @@ type App struct {
 	selRow int // selected view row, -1 if none
 	selCol int // selected table column, -1 if none
 
+	sidebarVisible bool
+
+	// Inline cell editing state (view coordinates).
+	editing     bool
+	editRow     int
+	editCol     int
+	editFocused bool
+
+	// Hover tooltip overlay.
+	hoverLayer *fyne.Container
+	hoverBG    *canvas.Rectangle
+	hoverText  *widget.RichText
+
 	startMode model.Mode // mode applied to files opened via the dialog
 }
 
@@ -61,14 +75,17 @@ type App struct {
 // or let the user open one from the toolbar; either way Run shows the window.
 func New() *App {
 	a := &App{
-		fyne:      app.NewWithID("nz.timeline.explorer"),
-		selRow:    -1,
-		selCol:    -1,
-		startMode: model.ReadOnly,
+		fyne:           app.NewWithID("nz.timeline.explorer"),
+		selRow:         -1,
+		selCol:         -1,
+		sidebarVisible: true,
+		startMode:      model.ReadOnly,
 	}
+	a.fyne.Settings().SetTheme(newCompactTheme())
 	a.win = a.fyne.NewWindow("Timeline explorer")
 	a.win.Resize(fyne.NewSize(1280, 760))
 	a.win.SetCloseIntercept(a.onClose)
+	a.buildHoverLayer()
 	a.registerShortcuts()
 	a.showPlaceholder()
 	return a
@@ -120,12 +137,18 @@ func (a *App) buildUI() {
 	a.scroll = container.NewVScroll(a.detail)
 	a.scroll.SetMinSize(fyne.NewSize(340, 100))
 
-	split := container.NewHSplit(a.table, a.scroll)
-	split.Offset = 0.72
+	a.split = container.NewHSplit(a.table, a.scroll)
+	a.split.Offset = 0.72
 
-	content := container.NewBorder(a.buildToolbar(), a.buildStatusBar(), nil, nil, split)
+	body := container.NewBorder(a.buildToolbar(), a.buildStatusBar(), nil, nil, a.split)
+	// The hover layer floats above everything but captures no input.
+	content := container.NewStack(body, a.hoverLayer)
 	a.win.SetContent(content)
 	a.win.Resize(fyne.NewSize(1280, 760))
+	if !a.sidebarVisible {
+		a.scroll.Hide()
+		a.split.SetOffset(1.0)
+	}
 	a.refreshStatus()
 }
 
@@ -138,6 +161,8 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	a.view = model.NewView(idx, sess)
 	a.sortState = nil
 	a.selRow, a.selCol = -1, -1
+	a.editing, a.editFocused = false, false
+	a.hideTooltip()
 	a.win.SetTitle("Timeline explorer — " + idx.Path())
 	a.buildColumns()
 	a.buildUI()
@@ -164,12 +189,13 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 	tagBtn := widget.NewButtonWithIcon("Tag", theme.ContentAddIcon(), a.tagSelected)
 	commentBtn := widget.NewButtonWithIcon("Comment", theme.MailComposeIcon(), a.commentSelected)
 	colsBtn := widget.NewButtonWithIcon("Columns", theme.ViewFullScreenIcon(), a.columnPicker)
+	sidebarBtn := widget.NewButtonWithIcon("Sidebar", theme.MenuIcon(), a.toggleSidebar)
 	helpBtn := widget.NewButtonWithIcon("Help", theme.HelpIcon(), a.showHelp)
 
 	left := container.NewHBox(openBtn, saveBtn, exportBtn, widget.NewSeparator(),
 		widget.NewLabel("Mode:"), a.modeSelect, widget.NewSeparator(),
 		tagBtn, commentBtn, widget.NewSeparator(), a.taggedChk)
-	right := container.NewHBox(colsBtn, helpBtn)
+	right := container.NewHBox(sidebarBtn, colsBtn, helpBtn)
 	// Search stretches in the middle.
 	return container.NewBorder(nil, nil, left, right, a.search)
 }

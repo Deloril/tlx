@@ -381,9 +381,17 @@ Keyboard
   Ctrl+F   focus filter        Enter   apply filter
   F3       find next match     Esc     clear filter
   Ctrl+G   go to row           Ctrl+S  save annotations
-  Ctrl+E   export view         t       tag selected row
-  c        comment row         m       cycle mode
+  Ctrl+E   export view         Ctrl+B  toggle sidebar
+  t        tag selected row    c       comment row
+  m        cycle mode
   Click a header to sort; click again to reverse.
+
+Editing cells
+  Click an editable cell to type into it directly. In Investigator mode
+  that is the Comment column; in World-write mode it is any cell. Enter
+  or click away commits, Esc cancels.
+
+Hover a truncated cell to see its full contents in a pop-up box.
 
 Filter box: plain text matches any column. Prefix with / for a regex.
 Annotations save to <file>.tlx.json and never modify the source CSV.
