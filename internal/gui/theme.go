@@ -1,19 +1,31 @@
 package gui
 
 import (
+	"image/color"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/theme"
 )
 
 // compactTheme tightens padding and text size so more rows fit on screen and
-// each cell paints fewer pixels. It defers colours and fonts to the default
-// dark/light theme.
+// each cell paints fewer pixels. Colours and fonts defer to the default theme,
+// but the light/dark variant can be forced so the app has its own toggle
+// independent of the OS setting.
 type compactTheme struct {
 	fyne.Theme
+	force   bool
+	variant fyne.ThemeVariant
 }
 
-func newCompactTheme() fyne.Theme {
-	return &compactTheme{Theme: theme.DefaultTheme()}
+func newCompactTheme(variant fyne.ThemeVariant) fyne.Theme {
+	return &compactTheme{Theme: theme.DefaultTheme(), force: true, variant: variant}
+}
+
+func (c *compactTheme) Color(name fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
+	if c.force {
+		v = c.variant
+	}
+	return c.Theme.Color(name, v)
 }
 
 func (c *compactTheme) Size(name fyne.ThemeSizeName) float32 {

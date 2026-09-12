@@ -2,6 +2,7 @@ package gui
 
 import (
 	"image/color"
+	"strconv"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -150,11 +151,16 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	}
 
 	if bg != nil {
-		want := color.Color(color.Transparent)
-		if a.rowAnnotated(master) {
-			want = tagHighlight
+		var want color.Color = color.Transparent
+		if hex, ok := a.sess.RowColor(master); ok {
+			want = rowTintColor(hex)
 		}
-		if bg.FillColor != want {
+		// Highlight the whole selected row, composited over any tag tint.
+		if id.Row == a.selRow {
+			base, _ := want.(color.NRGBA)
+			want = over(base, selectionTint())
+		}
+		if !colorEq(bg.FillColor, want) {
 			bg.FillColor = want
 			bg.Refresh()
 		}
@@ -210,6 +216,8 @@ func (a *App) sortByColumn(ref model.ColumnRef) {
 // and virtual columns.
 func (a *App) valueOf(master int, ref model.ColumnRef) string {
 	switch ref {
+	case model.ColRowNum:
+		return strconv.Itoa(master + 1)
 	case model.ColTags:
 		return strings.Join(a.sess.Tags(master), ", ")
 	case model.ColComment:
@@ -228,10 +236,6 @@ func (a *App) valueOf(master int, ref model.ColumnRef) string {
 		}
 		return ""
 	}
-}
-
-func (a *App) rowAnnotated(master int) bool {
-	return len(a.sess.Tags(master)) > 0 || a.sess.Comment(master) != ""
 }
 
 func (a *App) clearSelection() {

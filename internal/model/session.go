@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -42,6 +43,25 @@ var (
 	ErrColumnLocked = errors.New("investigator mode only permits editing tags and comments")
 )
 
+// TagDef is a tag and the colour it paints rows with. Colour is a "#RRGGBB"
+// hex string; the GUI parses it. The model stays free of any GUI/colour deps.
+type TagDef struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// defaultTagDefs are seeded into every session, in priority order (index 0 wins
+// when a row carries more than one). Red for bad, yellow for suspicious, green
+// for good.
+var defaultTagDefs = []TagDef{
+	{Name: "Bad", Color: "#E53935"},
+	{Name: "Suspicious", Color: "#FDD835"},
+	{Name: "Good", Color: "#43A047"},
+}
+
+// defaultTagColor is used for tags applied or loaded without an explicit colour.
+const defaultTagColor = "#78909C"
+
 // Session holds everything the user layers on top of the immutable CSV: the
 // active mode, per-row tags and comments, and per-cell edits. It implements
 // Overlay. State persists to a sidecar JSON file next to the source, so the
@@ -52,23 +72,38 @@ type Session struct {
 	sidecarPath string
 	mode        Mode
 
-	tags      map[int][]string
-	comments  map[int]string
-	edits     map[int]map[int]string
-	knownTags map[string]struct{}
-	dirty     bool
+	tags     map[int][]string
+	comments map[int]string
+	edits    map[int]map[int]string
+
+	// Tag palette: an ordered list of definitions (index 0 = highest priority)
+	// plus a name→index lookup. Seeded with the Bad/Suspicious/Good defaults.
+	tagDefs  []TagDef
+	tagIndex map[string]int
+
+	dirty bool
 }
 
 // NewSession returns an empty session for sourcePath in read-only mode.
 func NewSession(sourcePath string) *Session {
-	return &Session{
+	s := &Session{
 		sourcePath:  sourcePath,
 		sidecarPath: sourcePath + ".tlx.json",
 		mode:        ReadOnly,
 		tags:        map[int][]string{},
 		comments:    map[int]string{},
 		edits:       map[int]map[int]string{},
-		knownTags:   map[string]struct{}{},
+		tagIndex:    map[string]int{},
+	}
+	s.seedDefaults()
+	return s
+}
+
+// seedDefaults registers the built-in tags if they are not already present.
+// Caller must hold the lock, or call before the session is shared.
+func (s *Session) seedDefaults() {
+	for _, d := range defaultTagDefs {
+		s.defineLocked(d.Name, d.Color, false)
 	}
 }
 
@@ -94,6 +129,14 @@ func (s *Session) Dirty() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.dirty
+}
+
+// MarkSaved clears the dirty flag, e.g. after the annotations have been written
+// out to a CSV. It does not itself persist anything.
+func (s *Session) MarkSaved() {
+	s.mu.Lock()
+	s.dirty = false
+	s.mu.Unlock()
 }
 
 // Overlay implementation.
@@ -131,7 +174,8 @@ func (s *Session) CellOverride(row, col int) (string, bool) {
 
 // Mutations.
 
-// AddTag applies a tag to a row. Allowed in Investigator and World-write.
+// AddTag applies a tag to a row. Allowed in Investigator and World-write. An
+// unknown tag is registered in the palette with the default colour.
 func (s *Session) AddTag(row int, tag string) error {
 	if tag == "" {
 		return nil
@@ -148,7 +192,7 @@ func (s *Session) AddTag(row int, tag string) error {
 	}
 	s.tags[row] = append(s.tags[row], tag)
 	sort.Strings(s.tags[row])
-	s.knownTags[tag] = struct{}{}
+	s.defineLocked(tag, defaultTagColor, false)
 	s.dirty = true
 	return nil
 }
@@ -230,26 +274,174 @@ func (s *Session) ClearCell(row, col int) error {
 	return nil
 }
 
-// KnownTags returns the sorted set of tags used so far, for autocompletion.
+// KnownTags returns the palette tag names in priority order, for reuse and
+// autocompletion.
 func (s *Session) KnownTags() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]string, 0, len(s.knownTags))
-	for t := range s.knownTags {
-		out = append(out, t)
+	out := make([]string, len(s.tagDefs))
+	for i, d := range s.tagDefs {
+		out[i] = d.Name
 	}
-	sort.Strings(out)
 	return out
+}
+
+// TagDefs returns a copy of the tag palette in priority order.
+func (s *Session) TagDefs() []TagDef {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]TagDef, len(s.tagDefs))
+	copy(out, s.tagDefs)
+	return out
+}
+
+// TagColor returns the palette colour for a tag, or ("", false) if unknown.
+func (s *Session) TagColor(name string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if i, ok := s.tagIndex[name]; ok {
+		return s.tagDefs[i].Color, true
+	}
+	return "", false
+}
+
+// DefineTag registers a tag or updates its colour. Recolouring is presentation
+// state, so it is allowed in any mode; it does set the dirty flag.
+func (s *Session) DefineTag(name, color string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("tag name cannot be empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.defineLocked(name, color, true)
+	s.dirty = true
+	return nil
+}
+
+// defineLocked adds a tag to the palette, or updates its colour when override
+// is true. Caller holds the lock.
+func (s *Session) defineLocked(name, color string, override bool) {
+	if color == "" {
+		color = defaultTagColor
+	}
+	if i, ok := s.tagIndex[name]; ok {
+		if override {
+			s.tagDefs[i].Color = color
+		}
+		return
+	}
+	s.tagIndex[name] = len(s.tagDefs)
+	s.tagDefs = append(s.tagDefs, TagDef{Name: name, Color: color})
+}
+
+// RowColor returns the highlight colour for a row: the colour of its
+// highest-priority tag (lowest palette index). Returns ("", false) for an
+// untagged row.
+func (s *Session) RowColor(row int) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	best := -1
+	for _, t := range s.tags[row] {
+		if i, ok := s.tagIndex[t]; ok {
+			if best < 0 || i < best {
+				best = i
+			}
+		}
+	}
+	if best < 0 {
+		return "", false
+	}
+	return s.tagDefs[best].Color, true
+}
+
+// SessionSnapshot is a plain-data copy of every annotation in a session: tags,
+// comments, cell edits and the tag palette. It is what an external store (the
+// incident database) reads and writes, keeping the model free of any DB code.
+type SessionSnapshot struct {
+	Tags     map[int][]string
+	Comments map[int]string
+	Edits    map[int]map[int]string
+	TagDefs  []TagDef
+}
+
+// Snapshot returns a deep copy of all annotation state.
+func (s *Session) Snapshot() SessionSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snap := SessionSnapshot{
+		Tags:     make(map[int][]string, len(s.tags)),
+		Comments: make(map[int]string, len(s.comments)),
+		Edits:    make(map[int]map[int]string, len(s.edits)),
+		TagDefs:  make([]TagDef, len(s.tagDefs)),
+	}
+	for row, t := range s.tags {
+		cp := make([]string, len(t))
+		copy(cp, t)
+		snap.Tags[row] = cp
+	}
+	for row, c := range s.comments {
+		snap.Comments[row] = c
+	}
+	for row, cols := range s.edits {
+		m := make(map[int]string, len(cols))
+		for col, v := range cols {
+			m[col] = v
+		}
+		snap.Edits[row] = m
+	}
+	copy(snap.TagDefs, s.tagDefs)
+	return snap
+}
+
+// LoadSnapshot replaces all annotation state from a snapshot. It ignores the
+// mode (loading is not a user edit) and leaves the session clean. The palette
+// defaults remain seeded; snapshot definitions override their colours and set
+// priority order.
+func (s *Session) LoadSnapshot(snap SessionSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tags = map[int][]string{}
+	s.comments = map[int]string{}
+	s.edits = map[int]map[int]string{}
+	for _, d := range snap.TagDefs {
+		s.defineLocked(d.Name, d.Color, true)
+	}
+	for row, t := range snap.Tags {
+		cp := make([]string, len(t))
+		copy(cp, t)
+		s.tags[row] = cp
+		for _, tag := range t {
+			s.defineLocked(tag, defaultTagColor, false)
+		}
+	}
+	for row, c := range snap.Comments {
+		if c != "" {
+			s.comments[row] = c
+		}
+	}
+	for row, cols := range snap.Edits {
+		m := map[int]string{}
+		for col, v := range cols {
+			m[col] = v
+		}
+		if len(m) > 0 {
+			s.edits[row] = m
+		}
+	}
+	s.dirty = false
 }
 
 // Persistence.
 
 type sidecar struct {
-	Source    string                       `json:"source"`
-	Tags      map[string][]string          `json:"tags,omitempty"`
-	Comments  map[string]string            `json:"comments,omitempty"`
-	Edits     map[string]map[string]string `json:"edits,omitempty"`
-	KnownTags []string                     `json:"known_tags,omitempty"`
+	Source   string                       `json:"source"`
+	Tags     map[string][]string          `json:"tags,omitempty"`
+	Comments map[string]string            `json:"comments,omitempty"`
+	Edits    map[string]map[string]string `json:"edits,omitempty"`
+	TagDefs  []TagDef                     `json:"tag_defs,omitempty"`
+	// KnownTags is the legacy pre-colour format, still read for old sidecars.
+	KnownTags []string `json:"known_tags,omitempty"`
 }
 
 // Load reads the sidecar file if it exists. A missing file is not an error.
@@ -267,13 +459,21 @@ func (s *Session) Load() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Stored palette overrides the seeded default colours and defines priority
+	// order; the defaults remain present because they were seeded in NewSession.
+	for _, d := range sc.TagDefs {
+		s.defineLocked(d.Name, d.Color, true)
+	}
 	for k, v := range sc.Tags {
 		if row, err := strconv.Atoi(k); err == nil {
 			s.tags[row] = v
 			for _, t := range v {
-				s.knownTags[t] = struct{}{}
+				s.defineLocked(t, defaultTagColor, false)
 			}
 		}
+	}
+	for _, t := range sc.KnownTags { // legacy pre-colour sidecars
+		s.defineLocked(t, defaultTagColor, false)
 	}
 	for k, v := range sc.Comments {
 		if row, err := strconv.Atoi(k); err == nil {
@@ -294,9 +494,6 @@ func (s *Session) Load() error {
 		if len(m) > 0 {
 			s.edits[row] = m
 		}
-	}
-	for _, t := range sc.KnownTags {
-		s.knownTags[t] = struct{}{}
 	}
 	s.dirty = false
 	return nil
@@ -328,11 +525,10 @@ func (s *Session) Save() error {
 			sc.Edits[strconv.Itoa(row)] = m
 		}
 	}
-	sc.KnownTags = make([]string, 0, len(s.knownTags))
-	for t := range s.knownTags {
-		sc.KnownTags = append(sc.KnownTags, t)
+	if len(s.tagDefs) > 0 {
+		sc.TagDefs = make([]TagDef, len(s.tagDefs))
+		copy(sc.TagDefs, s.tagDefs)
 	}
-	sort.Strings(sc.KnownTags)
 	s.mu.Unlock()
 
 	data, err := json.MarshalIndent(sc, "", "  ")

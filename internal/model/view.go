@@ -15,6 +15,7 @@ type ColumnRef int
 const (
 	ColTags    ColumnRef = -1   // the virtual Tags column
 	ColComment ColumnRef = -2   // the virtual Comment column
+	ColRowNum  ColumnRef = -3   // the original CSV row number (display only)
 	ColAll     ColumnRef = -100 // match against every column
 	ColNone    ColumnRef = -101 // no column (disables text matching)
 )
@@ -34,7 +35,21 @@ type SortKey struct {
 	Desc bool
 }
 
-// FilterSpec describes an absolute filter over the full row set.
+// ColumnCond is one per-column condition: a set of values matched against a
+// single column (or ColAll). Values combine by OR unless All is set, in which
+// case the row must match every value. Conditions themselves are combined by
+// FilterSpec.CondsAny.
+type ColumnCond struct {
+	Column ColumnRef // ColAll or a specific data/virtual column
+	Values []string  // one or more values to match
+	Regexp bool      // treat each value as a regular expression
+	Cased  bool      // case-sensitive matching
+	All    bool      // require every value (AND); default is any (OR)
+}
+
+// FilterSpec describes an absolute filter over the full row set. The free-text
+// Query (from the search box), the tag filters and the per-column conditions
+// all narrow the result: a row is kept only if it passes every part that is set.
 type FilterSpec struct {
 	Query      string    // text to match; empty means match all
 	Regexp     bool      // treat Query as a regular expression
@@ -42,11 +57,14 @@ type FilterSpec struct {
 	Column     ColumnRef // ColAll, ColNone, a data column, or a virtual column
 	TaggedOnly bool      // keep only rows that carry at least one tag
 	Tag        string    // if set, keep only rows carrying this exact tag
+
+	Conds    []ColumnCond // per-column conditions
+	CondsAny bool         // true = OR across Conds; false (default) = AND
 }
 
 // Empty reports whether the spec would keep every row.
 func (f FilterSpec) Empty() bool {
-	return f.Query == "" && !f.TaggedOnly && f.Tag == ""
+	return f.Query == "" && !f.TaggedOnly && f.Tag == "" && len(f.Conds) == 0
 }
 
 // View is an ordered subset of an Index's rows after filtering and sorting. It
@@ -107,6 +125,59 @@ func (v *View) Sort(keys []SortKey) error {
 	return v.resort()
 }
 
+// matcher is one compiled value test: a regexp, or a substring needle.
+type matcher struct {
+	re     *regexp.Regexp
+	needle string // lowercased when !cased
+	cased  bool
+}
+
+func compileMatcher(value string, useRegexp, cased bool) (matcher, error) {
+	if useRegexp {
+		flags := ""
+		if !cased {
+			flags = "(?i)"
+		}
+		re, err := regexp.Compile(flags + value)
+		if err != nil {
+			return matcher{}, err
+		}
+		return matcher{re: re}, nil
+	}
+	if cased {
+		return matcher{needle: value, cased: true}, nil
+	}
+	return matcher{needle: strings.ToLower(value)}, nil
+}
+
+func (m matcher) match(s string) bool {
+	if m.re != nil {
+		return m.re.MatchString(s)
+	}
+	if m.cased {
+		return strings.Contains(s, m.needle)
+	}
+	return strings.Contains(strings.ToLower(s), m.needle)
+}
+
+// compiledCond is a ColumnCond with its values compiled once for the scan.
+type compiledCond struct {
+	column ColumnRef
+	all    bool
+	vals   []matcher
+}
+
+// compiledFilter is the whole spec reduced to what keep needs per row.
+type compiledFilter struct {
+	taggedOnly bool
+	tag        string
+	hasQuery   bool
+	query      matcher
+	queryCol   ColumnRef
+	conds      []compiledCond
+	condsAny   bool
+}
+
 func (v *View) refilter() error {
 	spec := v.filter
 	if spec.Empty() {
@@ -117,27 +188,40 @@ func (v *View) refilter() error {
 		return nil
 	}
 
-	var re *regexp.Regexp
-	needle := spec.Query
+	cf := compiledFilter{
+		taggedOnly: spec.TaggedOnly,
+		tag:        spec.Tag,
+		queryCol:   spec.Column,
+		condsAny:   spec.CondsAny,
+	}
 	if spec.Query != "" {
-		if spec.Regexp {
-			flags := ""
-			if !spec.Cased {
-				flags = "(?i)"
+		m, err := compileMatcher(spec.Query, spec.Regexp, spec.Cased)
+		if err != nil {
+			return err
+		}
+		cf.query = m
+		cf.hasQuery = true
+	}
+	for _, c := range spec.Conds {
+		cc := compiledCond{column: c.Column, all: c.All}
+		for _, val := range c.Values {
+			if val == "" {
+				continue
 			}
-			r, err := regexp.Compile(flags + spec.Query)
+			m, err := compileMatcher(val, c.Regexp, c.Cased)
 			if err != nil {
 				return err
 			}
-			re = r
-		} else if !spec.Cased {
-			needle = strings.ToLower(spec.Query)
+			cc.vals = append(cc.vals, m)
+		}
+		if len(cc.vals) > 0 {
+			cf.conds = append(cf.conds, cc)
 		}
 	}
 
 	matched := v.rows[:0]
 	err := v.idx.Scan(func(i int, rec []string) bool {
-		if v.keep(i, rec, spec, re, needle) {
+		if v.keep(i, rec, cf) {
 			matched = append(matched, i)
 		}
 		return true
@@ -149,45 +233,68 @@ func (v *View) refilter() error {
 	return nil
 }
 
-func (v *View) keep(row int, rec []string, spec FilterSpec, re *regexp.Regexp, needle string) bool {
-	if spec.TaggedOnly && len(v.ov.Tags(row)) == 0 {
+func (v *View) keep(row int, rec []string, cf compiledFilter) bool {
+	if cf.taggedOnly && len(v.ov.Tags(row)) == 0 {
 		return false
 	}
-	if spec.Tag != "" && !hasTag(v.ov.Tags(row), spec.Tag) {
+	if cf.tag != "" && !hasTag(v.ov.Tags(row), cf.tag) {
 		return false
 	}
-	if spec.Query == "" {
-		return true
+	if cf.hasQuery && cf.queryCol != ColNone {
+		if !v.columnMatch(row, rec, cf.queryCol, cf.query) {
+			return false
+		}
 	}
-	switch spec.Column {
-	case ColNone:
-		return true
-	case ColAll:
-		if v.textMatch(v.cell(row, rec, ColTags), re, needle, spec) {
-			return true
-		}
-		if v.textMatch(v.cell(row, rec, ColComment), re, needle, spec) {
-			return true
-		}
-		for c := 0; c < len(rec); c++ {
-			if v.textMatch(v.cell(row, rec, ColumnRef(c)), re, needle, spec) {
-				return true
-			}
-		}
+	if len(cf.conds) > 0 && !v.condsMatch(row, rec, cf) {
 		return false
-	default:
-		return v.textMatch(v.cell(row, rec, spec.Column), re, needle, spec)
 	}
+	return true
 }
 
-func (v *View) textMatch(s string, re *regexp.Regexp, needle string, spec FilterSpec) bool {
-	if re != nil {
-		return re.MatchString(s)
+// condsMatch evaluates the per-column condition group with the configured
+// across-condition combinator.
+func (v *View) condsMatch(row int, rec []string, cf compiledFilter) bool {
+	for _, c := range cf.conds {
+		ok := v.condMatch(row, rec, c)
+		if cf.condsAny && ok {
+			return true
+		}
+		if !cf.condsAny && !ok {
+			return false
+		}
 	}
-	if spec.Cased {
-		return strings.Contains(s, needle)
+	// AND: reaching here means all passed. OR: none passed.
+	return !cf.condsAny
+}
+
+func (v *View) condMatch(row int, rec []string, c compiledCond) bool {
+	for _, m := range c.vals {
+		hit := v.columnMatch(row, rec, c.column, m)
+		if c.all && !hit {
+			return false
+		}
+		if !c.all && hit {
+			return true
+		}
 	}
-	return strings.Contains(strings.ToLower(s), needle)
+	return c.all
+}
+
+// columnMatch reports whether the matcher hits the given column, or any column
+// when ref is ColAll.
+func (v *View) columnMatch(row int, rec []string, ref ColumnRef, m matcher) bool {
+	if ref != ColAll {
+		return m.match(v.cell(row, rec, ref))
+	}
+	if m.match(v.cell(row, rec, ColTags)) || m.match(v.cell(row, rec, ColComment)) {
+		return true
+	}
+	for c := 0; c < len(rec); c++ {
+		if m.match(v.cell(row, rec, ColumnRef(c))) {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *View) resort() error {
@@ -241,6 +348,8 @@ func (v *View) resort() error {
 
 func (v *View) cell(masterRow int, rec []string, ref ColumnRef) string {
 	switch ref {
+	case ColRowNum:
+		return strconv.Itoa(masterRow + 1)
 	case ColTags:
 		return strings.Join(v.ov.Tags(masterRow), ", ")
 	case ColComment:

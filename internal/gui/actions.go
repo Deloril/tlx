@@ -2,6 +2,7 @@ package gui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -21,6 +22,17 @@ func (a *App) showError(err error) {
 }
 
 func (a *App) onModeChange(s string) {
+	// The master timeline is a read-only summary; ignore attempts to leave
+	// read-only there so edits can't be made against its throwaway session.
+	if a.masterMode {
+		if a.sess != nil {
+			a.sess.SetMode(model.ReadOnly)
+		}
+		if a.modeSelect != nil && s != model.ReadOnly.String() {
+			a.modeSelect.SetSelected(model.ReadOnly.String())
+		}
+		return
+	}
 	switch s {
 	case model.Investigator.String():
 		a.sess.SetMode(model.Investigator)
@@ -44,7 +56,12 @@ func (a *App) cycleMode() {
 
 func (a *App) applySearch() {
 	q := strings.TrimSpace(a.search.Text)
-	spec := model.FilterSpec{Column: model.ColAll, TaggedOnly: a.taggedChk.Checked}
+	spec := model.FilterSpec{
+		Column:     model.ColAll,
+		TaggedOnly: a.taggedChk.Checked,
+		Conds:      a.conds,
+		CondsAny:   a.condsAny,
+	}
 	if strings.HasPrefix(q, "/") && len(q) > 1 {
 		spec.Query = q[1:]
 		spec.Regexp = true
@@ -63,6 +80,8 @@ func (a *App) applySearch() {
 func (a *App) clearFilter() {
 	a.search.SetText("")
 	a.taggedChk.SetChecked(false)
+	a.conds = nil
+	a.condsAny = false
 	a.view.Apply(model.FilterSpec{})
 	a.clearSelection()
 	a.refreshTable()
@@ -78,33 +97,72 @@ func (a *App) tagSelected() {
 	}
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("tag name, e.g. lateral-movement")
-	known := a.sess.KnownTags()
-	var chips fyne.CanvasObject = widget.NewLabel("(no tags yet)")
-	if len(known) > 0 {
-		chips = a.tagChoices(known, entry)
+
+	// Colour picker: preset swatches, single selection. Default to the first
+	// preset; picking an existing tag below adopts its colour.
+	chosen := palettePresets[0]
+	var swatches []*swatch
+	selectColor := func(hex string) {
+		chosen = hex
+		for _, sw := range swatches {
+			sw.setSelected(colorEq(sw.fill, parseHex(hex)))
+		}
 	}
+	swBox := container.NewGridWrap(fyne.NewSize(34, 26))
+	for _, hex := range palettePresets {
+		hex := hex
+		sw := newSwatch(parseHex(hex), func() { selectColor(hex) })
+		swatches = append(swatches, sw)
+		swBox.Add(sw)
+	}
+	selectColor(chosen)
+
+	// Reuse existing tags: tapping fills the name and adopts its colour.
+	defs := a.sess.TagDefs()
+	var reuse fyne.CanvasObject = widget.NewLabel("(none yet)")
+	if len(defs) > 0 {
+		chipBox := container.NewGridWrap(fyne.NewSize(150, 30))
+		for _, d := range defs {
+			d := d
+			chipBox.Add(newTagChip(d.Name, d.Color, func() {
+				entry.SetText(d.Name)
+				selectColor(d.Color)
+			}))
+		}
+		reuse = chipBox
+	}
+
 	current := widget.NewLabel("Current: " + strings.Join(a.sess.Tags(master), ", "))
-	body := container.NewVBox(current, entry, widget.NewLabel("Reuse:"), chips)
-	dialog.ShowCustomConfirm("Add tag", "Add", "Cancel", body, func(ok bool) {
+	body := container.NewVBox(
+		current,
+		widget.NewLabel("Tag name:"), entry,
+		widget.NewLabel("Colour (new tags only):"), swBox,
+		widget.NewLabel("Reuse:"), reuse,
+	)
+	d := dialog.NewCustomConfirm("Add tag", "Add", "Cancel", container.NewVScroll(body), func(ok bool) {
 		if !ok {
 			return
 		}
-		if err := a.sess.AddTag(master, strings.TrimSpace(entry.Text)); err != nil {
+		name := strings.TrimSpace(entry.Text)
+		if name == "" {
+			return
+		}
+		// Register colour for a new tag; leave existing tags' colours alone.
+		if _, known := a.sess.TagColor(name); !known {
+			if err := a.sess.DefineTag(name, chosen); err != nil {
+				a.showError(err)
+				return
+			}
+		}
+		if err := a.sess.AddTag(master, name); err != nil {
 			a.showError(err)
 			return
 		}
 		a.showDetail(master)
 		a.refreshTable()
 	}, a.win)
-}
-
-func (a *App) tagChoices(known []string, entry *widget.Entry) fyne.CanvasObject {
-	box := container.NewGridWrap(fyne.NewSize(140, 32))
-	for _, t := range known {
-		t := t
-		box.Add(widget.NewButton(t, func() { entry.SetText(t) }))
-	}
-	return box
+	d.Resize(a.dialogSize(560, 620))
+	d.Show()
 }
 
 func (a *App) commentSelected() {
@@ -138,14 +196,40 @@ func (a *App) showDetail(master int) {
 		return
 	}
 	mode := a.sess.Mode()
+
+	// Master view: the row is a tagged entry from another timeline. Offer to
+	// jump to it in its own timeline, and skip the annotation controls below
+	// (they belong to a real session, not this read-only summary).
+	if a.masterMode && master >= 0 && master < len(a.masterEntries) {
+		e := a.masterEntries[master]
+		items := []fyne.CanvasObject{
+			widget.NewLabelWithStyle(e.Timeline+" — row "+fmt.Sprint(e.Row+1),
+				fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			widget.NewButtonWithIcon("Open in "+e.Timeline, theme.NavigateNextIcon(),
+				func() { a.openMasterSource(a.selRow) }),
+			widget.NewSeparator(),
+		}
+		for i, h := range a.idx.Headers() {
+			val := a.valueOf(master, model.ColumnRef(i))
+			lbl := widget.NewLabel(val)
+			lbl.Wrapping = fyne.TextWrapWord
+			items = append(items, widget.NewLabelWithStyle(h, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), lbl)
+		}
+		a.detail.Objects = items
+		a.detail.Refresh()
+		return
+	}
+
 	items := []fyne.CanvasObject{
 		widget.NewLabelWithStyle(fmt.Sprintf("Row %d", master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 	}
 
-	// Tags block.
+	// Tags block, each chip prefixed with its colour.
 	tagsRow := container.NewHBox(widget.NewLabel("Tags:"))
 	for _, t := range a.sess.Tags(master) {
 		t := t
+		hex, _ := a.sess.TagColor(t)
+		tagsRow.Add(colorSquare(hex))
 		if mode != model.ReadOnly {
 			tagsRow.Add(widget.NewButtonWithIcon(t, theme.CancelIcon(), func() {
 				a.sess.RemoveTag(master, t)
@@ -222,19 +306,62 @@ func (a *App) openFile() {
 				a.showError(err)
 			}
 			sess.SetMode(a.startMode)
+			a.inc, a.curTimeline, a.masterMode = nil, nil, false
+			a.annotCols = true
 			a.reloadWith(idx, sess)
+			a.rebuildIncidentMenu()
 		}, a.win)
 	}
 	a.confirmIfDirty(do)
 }
 
+// save writes an annotated CSV (every row, in original order, with the Tags and
+// Comment columns appended and cell edits applied) next to the source. The
+// source CSV is never modified.
 func (a *App) save() {
-	if err := a.sess.Save(); err != nil {
+	// Inside an incident, annotations persist to the incident database rather
+	// than to a CSV sidecar.
+	if a.inc != nil {
+		switch {
+		case a.masterMode:
+			dialog.ShowInformation("Master timeline",
+				"The master timeline is a read-only summary. Save annotations from within each timeline.", a.win)
+		case a.curTimeline != nil:
+			if err := a.inc.SaveAnnotations(*a.curTimeline, a.sess.Snapshot(), a.idx); err != nil {
+				a.showError(err)
+				return
+			}
+			a.sess.MarkSaved()
+			a.refreshStatus()
+			dialog.ShowInformation("Saved",
+				fmt.Sprintf("Annotations for %q saved to the incident.", a.curTimeline.Name), a.win)
+		default:
+			dialog.ShowInformation("No timeline open",
+				"Open a timeline from the Incident menu, then save.", a.win)
+		}
+		return
+	}
+
+	if a.idx == nil {
+		dialog.ShowInformation("Nothing to save", "Open a CSV or a timeline first.", a.win)
+		return
+	}
+
+	dest := annotatedPath(a.idx.Path())
+	full := model.NewView(a.idx, a.sess) // all rows, natural order
+	if err := model.Export(full, a.sess, dest); err != nil {
 		a.showError(err)
 		return
 	}
+	a.sess.MarkSaved()
 	a.refreshStatus()
-	dialog.ShowInformation("Saved", "Annotations written to\n"+a.sess.SidecarPath(), a.win)
+	dialog.ShowInformation("Saved", fmt.Sprintf("%d rows written to\n%s", a.idx.RowCount(), dest), a.win)
+}
+
+// annotatedPath derives "name.csv" -> "name.annotated.csv".
+func annotatedPath(src string) string {
+	ext := filepath.Ext(src)
+	return strings.TrimSuffix(src, ext) + ".annotated.csv"
 }
 
 func (a *App) export() {
@@ -266,7 +393,15 @@ func (a *App) confirmIfDirty(then func()) {
 }
 
 func (a *App) onClose() {
-	a.confirmIfDirty(func() { a.win.Close() })
+	a.confirmIfDirty(func() {
+		if a.idx != nil {
+			a.idx.Close()
+		}
+		if a.inc != nil {
+			a.inc.Close() // flushes and checkpoints the WAL
+		}
+		a.win.Close()
+	})
 }
 
 // Navigation.
@@ -338,35 +473,46 @@ func (a *App) rowContains(master int, needleLower string) bool {
 // Column visibility.
 
 func (a *App) columnPicker() {
-	checks := container.NewVBox()
 	boxes := make([]*widget.Check, len(a.cols))
+	grid := container.NewGridWithColumns(2)
 	for i := range a.cols {
-		i := i
 		c := widget.NewCheck(a.cols[i].title, nil)
 		c.SetChecked(a.cols[i].visible)
 		boxes[i] = c
-		checks.Add(c)
+		grid.Add(c)
 	}
-	dialog.ShowCustomConfirm("Columns", "Apply", "Cancel",
-		container.NewVScroll(checks), func(ok bool) {
-			if !ok {
-				return
-			}
-			any := false
-			for i := range a.cols {
-				a.cols[i].visible = boxes[i].Checked
-				any = any || boxes[i].Checked
-			}
-			if !any { // never hide everything
-				a.cols[0].visible = true
-			}
-			a.rebuildVisible()
-			for i, ci := range a.visible {
-				a.table.SetColumnWidth(i, a.cols[ci].width)
-			}
-			a.clearSelection()
-			a.refreshTable()
-		}, a.win)
+	setAll := func(v bool) {
+		for _, c := range boxes {
+			c.SetChecked(v)
+		}
+	}
+	tools := container.NewHBox(
+		widget.NewButton("Select all", func() { setAll(true) }),
+		widget.NewButton("Select none", func() { setAll(false) }),
+	)
+	content := container.NewBorder(tools, nil, nil, nil, container.NewVScroll(grid))
+
+	d := dialog.NewCustomConfirm("Columns", "Apply", "Cancel", content, func(ok bool) {
+		if !ok {
+			return
+		}
+		any := false
+		for i := range a.cols {
+			a.cols[i].visible = boxes[i].Checked
+			any = any || boxes[i].Checked
+		}
+		if !any { // never hide everything
+			a.cols[0].visible = true
+		}
+		a.rebuildVisible()
+		for i, ci := range a.visible {
+			a.table.SetColumnWidth(i, a.cols[ci].width)
+		}
+		a.clearSelection()
+		a.refreshTable()
+	}, a.win)
+	d.Resize(a.dialogSize(700, 640))
+	d.Show()
 }
 
 func (a *App) showHelp() {
@@ -380,23 +526,55 @@ Modes
 Keyboard
   Ctrl+F   focus filter        Enter   apply filter
   F3       find next match     Esc     clear filter
-  Ctrl+G   go to row           Ctrl+S  save annotations
+  Ctrl+G   go to row           Ctrl+S  save annotated CSV
   Ctrl+E   export view         Ctrl+B  toggle sidebar
   t        tag selected row    c       comment row
   m        cycle mode
   Click a header to sort; click again to reverse.
+
+Tags and colours
+  Rows are highlighted by their tag's colour; Bad is red, Suspicious
+  yellow, Good green. The highest-priority tag on a row wins. Add your
+  own tags with a chosen colour in the Tag dialog. Click a row's Tags
+  cell to pick tags from a drop-down.
 
 Editing cells
   Click an editable cell to type into it directly. In Investigator mode
   that is the Comment column; in World-write mode it is any cell. Enter
   or click away commits, Esc cancels.
 
-Hover a truncated cell to see its full contents in a pop-up box.
+Filtering
+  The search box matches any column (prefix / for a regex). The Filter
+  button builds per-column conditions with multiple values each, combined
+  with AND or OR. The "#" column keeps each row's original CSV line
+  number even after filtering or sorting.
 
-Filter box: plain text matches any column. Prefix with / for a regex.
-Annotations save to <file>.tlx.json and never modify the source CSV.
-Export writes the current (filtered, sorted) view with Tags and Comment columns.`
+Incidents (File and Incident menus)
+  An incident groups several timelines in one database (.tlxdb), chosen
+  when you create it. Add a CSV with Incident > Add timeline; open any
+  timeline from the Incident menu. Inside an incident, Save writes your
+  tags, comments and edits back to the incident database, not to a CSV.
+  Incident > Master timeline shows every tagged row from all timelines in
+  one time-sorted view; click a row's "Open in…" button to jump to it in
+  its own timeline. The timestamp column of each timeline is detected
+  automatically.
+
+Saved views (Views menu)
+  Save the current filter and sort as a named view. Saved views are
+  application-wide, so they apply to any file, timeline or the master
+  view. Columns are matched by name, so a view carries across timelines
+  with the same fields.
+
+Hover a truncated cell to see its full contents in a pop-up box.
+Use the palette button to switch between light and dark themes.
+
+Save writes every row to <file>.annotated.csv for a standalone CSV (data
+plus Tags and Comment, with cell edits applied); the source CSV is never
+modified. Inside an incident, Save persists to the incident database.
+Export writes the current filtered, sorted view to a CSV.`
 	lbl := widget.NewLabel(help)
 	lbl.TextStyle = fyne.TextStyle{Monospace: true}
-	dialog.ShowCustom("Help", "Close", container.NewVScroll(lbl), a.win)
+	d := dialog.NewCustom("Help", "Close", container.NewVScroll(lbl), a.win)
+	d.Resize(a.dialogSize(680, 620))
+	d.Show()
 }

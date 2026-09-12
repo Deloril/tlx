@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"strconv"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -63,8 +64,9 @@ func (a *App) cellEditable(ref model.ColumnRef) bool {
 	}
 }
 
-// onCellSelected runs when a grid cell is clicked. It updates the detail pane
-// (when shown) and, for editable columns, drops straight into inline editing.
+// onCellSelected runs when a grid cell is clicked. It selects (and highlights)
+// the whole row, updates the detail pane, and either drops into inline editing
+// or opens the tag drop-down, depending on the column.
 func (a *App) onCellSelected(id widget.TableCellID) {
 	a.selRow, a.selCol = id.Row, id.Col
 	if id.Row < 0 || id.Row >= a.view.Len() || id.Col < 0 || id.Col >= len(a.visible) {
@@ -75,11 +77,76 @@ func (a *App) onCellSelected(id widget.TableCellID) {
 		a.showDetail(master)
 	}
 	ref := a.cols[a.visible[id.Col]].ref
-	if a.cellEditable(ref) {
+	switch {
+	case ref == model.ColTags && a.sess.Mode() != model.ReadOnly:
+		a.cancelInlineEdit()
+		a.editTagsPopup(master)
+	case a.cellEditable(ref):
 		a.startInlineEdit(id.Row, id.Col)
-	} else {
+	default:
 		a.cancelInlineEdit()
 	}
+	// Repaint so the row-selection highlight follows the click.
+	a.table.Refresh()
+}
+
+// editTagsPopup shows a drop-down of the tag palette anchored at the pointer.
+// Ticking a tag adds it to the row, unticking removes it, live.
+func (a *App) editTagsPopup(master int) {
+	defs := a.sess.TagDefs()
+	has := map[string]bool{}
+	for _, t := range a.sess.Tags(master) {
+		has[t] = true
+	}
+
+	box := container.NewVBox(widget.NewLabelWithStyle(
+		"Tags for row "+strconv.Itoa(master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+
+	var pop *widget.PopUp
+	for _, d := range defs {
+		d := d
+		chk := widget.NewCheck(d.Name, func(on bool) {
+			var err error
+			if on {
+				err = a.sess.AddTag(master, d.Name)
+			} else {
+				err = a.sess.RemoveTag(master, d.Name)
+			}
+			if err != nil {
+				a.showError(err)
+				return
+			}
+			if a.sidebarVisible {
+				a.showDetail(master)
+			}
+			a.refreshTable()
+		})
+		chk.SetChecked(has[d.Name])
+		box.Add(container.NewHBox(colorSquare(d.Color), chk))
+	}
+
+	box.Add(widget.NewSeparator())
+	box.Add(container.NewHBox(
+		widget.NewButtonWithIcon("New tag…", theme.ContentAddIcon(), func() {
+			if pop != nil {
+				pop.Hide()
+			}
+			a.tagSelected()
+		}),
+		widget.NewButton("Close", func() {
+			if pop != nil {
+				pop.Hide()
+			}
+		}),
+	))
+
+	h := float32(80 + len(defs)*30)
+	if h > 380 {
+		h = 380
+	}
+	pop = widget.NewPopUp(container.NewVScroll(box), a.win.Canvas())
+	pop.Resize(fyne.NewSize(260, h))
+	pop.ShowAtPosition(a.table.lastPos)
 }
 
 func (a *App) startInlineEdit(row, col int) {

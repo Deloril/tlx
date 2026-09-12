@@ -37,6 +37,23 @@ type Index struct {
 	mu    sync.Mutex // guards f and cache during random reads
 	f     *os.File
 	cache *rowCache
+
+	// mem holds records for an in-memory index (see NewMemoryIndex). When
+	// non-nil the file fields above are unused.
+	mem [][]string
+}
+
+// NewMemoryIndex builds an index backed by in-memory records rather than a file.
+// It is used for synthetic tables such as the master timeline, so the same view,
+// filter, sort and export machinery works over rows assembled in memory. Row
+// copies are returned so callers may keep them; Close is a no-op.
+func NewMemoryIndex(headers []string, records [][]string) *Index {
+	return &Index{
+		path:    "(memory)",
+		delim:   ',',
+		headers: headers,
+		mem:     records,
+	}
 }
 
 // Open indexes path with a single sequential pass. The onProgress callback (may
@@ -221,13 +238,24 @@ func (idx *Index) Delimiter() byte { return idx.delim }
 func (idx *Index) Path() string { return idx.path }
 
 // RowCount is the number of data records (header excluded).
-func (idx *Index) RowCount() int { return len(idx.bounds) - 2 }
+func (idx *Index) RowCount() int {
+	if idx.mem != nil {
+		return len(idx.mem)
+	}
+	return len(idx.bounds) - 2
+}
 
 // Row returns data record i (0-based, header excluded). The returned slice is a
 // fresh copy safe for the caller to keep. Results are cached.
 func (idx *Index) Row(i int) ([]string, error) {
 	if i < 0 || i >= idx.RowCount() {
 		return nil, fmt.Errorf("row %d out of range [0,%d)", i, idx.RowCount())
+	}
+	if idx.mem != nil {
+		rec := idx.mem[i]
+		out := make([]string, len(rec))
+		copy(out, rec)
+		return out, nil
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -273,6 +301,14 @@ func (idx *Index) readSpanLocked(start, end int64) ([]byte, error) {
 // is far faster than calling Row in a loop (no per-row seek) and is what filter
 // and sort-key extraction use for a full pass. fn returns false to stop early.
 func (idx *Index) Scan(fn func(i int, rec []string) bool) error {
+	if idx.mem != nil {
+		for i, rec := range idx.mem {
+			if !fn(i, rec) {
+				return nil
+			}
+		}
+		return nil
+	}
 	f, err := os.Open(idx.path)
 	if err != nil {
 		return err
@@ -312,6 +348,9 @@ func (idx *Index) Scan(fn func(i int, rec []string) bool) error {
 
 // Close releases the underlying file handle.
 func (idx *Index) Close() error {
+	if idx.mem != nil {
+		return nil
+	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	if idx.f != nil {

@@ -246,8 +246,103 @@ func TestSessionPersistence(t *testing.T) {
 	if v, ok := s2.CellOverride(1, 0); !ok || v != "99" {
 		t.Fatalf("reloaded override = %q,%v", v, ok)
 	}
-	if kt := s2.KnownTags(); strings.Join(kt, ",") != "beacon,c2" {
+	// KnownTags now leads with the seeded defaults, then user tags in the order
+	// they were first applied.
+	if kt := s2.KnownTags(); strings.Join(kt, ",") != "Bad,Suspicious,Good,beacon,c2" {
 		t.Fatalf("known tags = %v", kt)
+	}
+}
+
+func TestDefaultTagColors(t *testing.T) {
+	s := NewSession("x.csv")
+	for _, d := range defaultTagDefs {
+		got, ok := s.TagColor(d.Name)
+		if !ok || got != d.Color {
+			t.Fatalf("default tag %q colour = %q,%v want %q", d.Name, got, ok, d.Color)
+		}
+	}
+	// Bad outranks Good on a row carrying both.
+	s.SetMode(Investigator)
+	s.AddTag(0, "Good")
+	s.AddTag(0, "Bad")
+	c, ok := s.RowColor(0)
+	if !ok || c != "#E53935" {
+		t.Fatalf("row colour = %q,%v, want Bad red", c, ok)
+	}
+}
+
+func TestCustomTagColorPersists(t *testing.T) {
+	idx := openT(t, "a\n1\n2\n")
+	s := NewSession(idx.Path())
+	s.SetMode(Investigator)
+	if err := s.DefineTag("beacon", "#123456"); err != nil {
+		t.Fatal(err)
+	}
+	s.AddTag(0, "beacon")
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewSession(idx.Path())
+	if err := s2.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := s2.TagColor("beacon"); !ok || c != "#123456" {
+		t.Fatalf("reloaded beacon colour = %q,%v", c, ok)
+	}
+	// Defaults survive a reload too.
+	if c, _ := s2.TagColor("Bad"); c != "#E53935" {
+		t.Fatalf("reloaded Bad colour = %q", c)
+	}
+}
+
+func TestColumnCondFilter(t *testing.T) {
+	idx := openT(t, "host,event\nalpha,login\nbravo,logout\nalpha,logout\ncharlie,login\n")
+	v := NewView(idx, NewSession(idx.Path()))
+
+	// host contains alpha OR bravo (any within one column).
+	if err := v.Apply(FilterSpec{Conds: []ColumnCond{
+		{Column: 0, Values: []string{"alpha", "bravo"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 3 {
+		t.Fatalf("host in {alpha,bravo} -> %d rows, want 3", v.Len())
+	}
+
+	// AND across two columns: host=alpha AND event=logout.
+	if err := v.Apply(FilterSpec{Conds: []ColumnCond{
+		{Column: 0, Values: []string{"alpha"}},
+		{Column: 1, Values: []string{"logout"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 1 {
+		t.Fatalf("alpha AND logout -> %d rows, want 1", v.Len())
+	}
+
+	// OR across two columns: host=charlie OR event=logout.
+	if err := v.Apply(FilterSpec{CondsAny: true, Conds: []ColumnCond{
+		{Column: 0, Values: []string{"charlie"}},
+		{Column: 1, Values: []string{"logout"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 3 { // bravo/logout, alpha/logout, charlie/login
+		t.Fatalf("charlie OR logout -> %d rows, want 3", v.Len())
+	}
+}
+
+func TestColumnCondAllValues(t *testing.T) {
+	idx := openT(t, "msg\nfailed login attempt\nfailed logout\nsuccess login\n")
+	v := NewView(idx, NewSession(idx.Path()))
+	// A single column must contain BOTH words.
+	if err := v.Apply(FilterSpec{Conds: []ColumnCond{
+		{Column: 0, Values: []string{"failed", "login"}, All: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 1 {
+		t.Fatalf("failed AND login -> %d rows, want 1", v.Len())
 	}
 }
 

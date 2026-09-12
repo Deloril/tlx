@@ -4,7 +4,7 @@ package gui
 
 import (
 	"fmt"
-	"image/color"
+	"path/filepath"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"timeline-engine/internal/incident"
 	"timeline-engine/internal/model"
 )
 
@@ -34,6 +35,21 @@ type App struct {
 	sess *model.Session
 	view *model.View
 
+	// Incident context. When inc is non-nil the app is working inside an
+	// incident: curTimeline names the open timeline (nil in the master view),
+	// masterMode is true while showing the cross-timeline master timeline, and
+	// masterEntries backs that view's rows.
+	inc           *incident.Incident
+	curTimeline   *incident.TimelineMeta
+	masterMode    bool
+	masterEntries []incident.MasterEntry
+	incidentMenu  *fyne.Menu
+
+	// annotCols controls whether the virtual #/Tags/Comment columns are built.
+	// True for CSV and timeline views, false for the master timeline (whose
+	// tags and comment are ordinary data columns).
+	annotCols bool
+
 	cols      []column        // all columns, in display order
 	visible   []int           // indices into cols that are currently shown
 	sortState []model.SortKey // mirror of view sort keys, for header arrows
@@ -46,6 +62,7 @@ type App struct {
 	search     *widget.Entry
 	modeSelect *widget.Select
 	taggedChk  *widget.Check
+	themeBtn   *widget.Button
 
 	statusMode   *widget.Label
 	statusRows   *widget.Label
@@ -56,6 +73,12 @@ type App struct {
 	selCol int // selected table column, -1 if none
 
 	sidebarVisible bool
+	themeVariant   fyne.ThemeVariant
+
+	// Per-column filter conditions, kept so the search box and column filter
+	// compose and both survive a re-apply.
+	conds    []model.ColumnCond
+	condsAny bool
 
 	// Inline cell editing state (view coordinates).
 	editing     bool
@@ -79,12 +102,14 @@ func New() *App {
 		selRow:         -1,
 		selCol:         -1,
 		sidebarVisible: true,
+		themeVariant:   theme.VariantDark,
 		startMode:      model.ReadOnly,
 	}
-	a.fyne.Settings().SetTheme(newCompactTheme())
+	a.fyne.Settings().SetTheme(newCompactTheme(a.themeVariant))
 	a.win = a.fyne.NewWindow("Timeline explorer")
 	a.win.Resize(fyne.NewSize(1280, 760))
 	a.win.SetCloseIntercept(a.onClose)
+	a.win.SetMainMenu(a.buildMainMenu())
 	a.buildHoverLayer()
 	a.registerShortcuts()
 	a.showPlaceholder()
@@ -96,6 +121,8 @@ func (a *App) SetStartMode(m model.Mode) { a.startMode = m }
 
 // OpenInitial loads an already-opened index and session into the window.
 func (a *App) OpenInitial(idx *model.Index, sess *model.Session) {
+	a.inc, a.curTimeline, a.masterMode = nil, nil, false
+	a.annotCols = true
 	a.reloadWith(idx, sess)
 }
 
@@ -107,18 +134,34 @@ func (a *App) showPlaceholder() {
 }
 
 func (a *App) buildColumns() {
-	a.cols = []column{
-		{ref: model.ColTags, title: "✎ Tags", visible: true, width: 160},
-		{ref: model.ColComment, title: "✎ Comment", visible: true, width: 220},
+	a.cols = nil
+	if a.annotCols {
+		a.cols = append(a.cols,
+			column{ref: model.ColRowNum, title: "#", visible: true, width: 72},
+			column{ref: model.ColTags, title: "✎ Tags", visible: true, width: 160},
+			column{ref: model.ColComment, title: "✎ Comment", visible: true, width: 220},
+		)
 	}
 	for i, h := range a.idx.Headers() {
-		w := float32(140)
-		if h == "Summary" || h == "Message" {
-			w = 520
-		}
-		a.cols = append(a.cols, column{ref: model.ColumnRef(i), title: h, visible: true, width: w})
+		a.cols = append(a.cols, column{ref: model.ColumnRef(i), title: h, visible: true, width: colWidth(h)})
 	}
 	a.rebuildVisible()
+}
+
+// colWidth picks a starting width for a column by its header name.
+func colWidth(h string) float32 {
+	switch h {
+	case "Summary", "Message":
+		return 520
+	case "Time", "Timestamp":
+		return 180
+	case "Timeline", "Tags":
+		return 150
+	case "Comment":
+		return 240
+	default:
+		return 140
+	}
 }
 
 func (a *App) rebuildVisible() {
@@ -163,10 +206,26 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	a.selRow, a.selCol = -1, -1
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
-	a.win.SetTitle("Timeline explorer — " + idx.Path())
+	a.win.SetTitle(a.windowTitle())
 	a.buildColumns()
 	a.buildUI()
 	a.modeSelect.SetSelected(a.sess.Mode().String())
+}
+
+// windowTitle reflects the current context: master view, a named timeline in an
+// incident, or a standalone file.
+func (a *App) windowTitle() string {
+	const base = "Timeline explorer"
+	switch {
+	case a.masterMode && a.inc != nil:
+		return base + " — Master timeline [" + filepath.Base(a.inc.Path()) + "]"
+	case a.curTimeline != nil && a.inc != nil:
+		return base + " — " + a.curTimeline.Name + " [" + filepath.Base(a.inc.Path()) + "]"
+	case a.idx != nil:
+		return base + " — " + a.idx.Path()
+	default:
+		return base
+	}
 }
 
 func (a *App) buildToolbar() fyne.CanvasObject {
@@ -188,14 +247,17 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 
 	tagBtn := widget.NewButtonWithIcon("Tag", theme.ContentAddIcon(), a.tagSelected)
 	commentBtn := widget.NewButtonWithIcon("Comment", theme.MailComposeIcon(), a.commentSelected)
+	filterBtn := widget.NewButtonWithIcon("Filter", theme.ListIcon(), a.columnFilter)
 	colsBtn := widget.NewButtonWithIcon("Columns", theme.ViewFullScreenIcon(), a.columnPicker)
 	sidebarBtn := widget.NewButtonWithIcon("Sidebar", theme.MenuIcon(), a.toggleSidebar)
+	a.themeBtn = widget.NewButtonWithIcon("", theme.ColorPaletteIcon(), a.toggleTheme)
+	a.updateThemeButton()
 	helpBtn := widget.NewButtonWithIcon("Help", theme.HelpIcon(), a.showHelp)
 
 	left := container.NewHBox(openBtn, saveBtn, exportBtn, widget.NewSeparator(),
 		widget.NewLabel("Mode:"), a.modeSelect, widget.NewSeparator(),
 		tagBtn, commentBtn, widget.NewSeparator(), a.taggedChk)
-	right := container.NewHBox(sidebarBtn, colsBtn, helpBtn)
+	right := container.NewHBox(filterBtn, sidebarBtn, a.themeBtn, colsBtn, helpBtn)
 	// Search stretches in the middle.
 	return container.NewBorder(nil, nil, left, right, a.search)
 }
@@ -246,9 +308,6 @@ func (a *App) refreshTable() {
 	a.table.Refresh()
 	a.refreshStatus()
 }
-
-// tagHighlight is the row background for rows that carry annotations.
-var tagHighlight = color.NRGBA{R: 0xF6, G: 0xD8, B: 0x8A, A: 0x55}
 
 // Run shows the window and blocks until it closes.
 func (a *App) Run() {
