@@ -617,7 +617,8 @@ Keyboard
   Ctrl+S   save                Ctrl+E  export view
   Ctrl+B   toggle detail pane  Ctrl+L  toggle views sidebar
   t        tag selected row    c       comment row
-  Click a header to sort; click again to reverse.
+  Click a header to sort; click again to reverse. Type in the box beside
+  a header to filter that column, then press Enter to apply.
 
 Selecting rows
   Click        select one row
@@ -663,6 +664,11 @@ Filtering
   conditions and the freetext query combine together. Apply commits both;
   Enter in the query box does the same. The "#" column keeps each row's
   original CSV line number even after filtering or sorting.
+
+  Per-column boxes: each header has a small filter box beside its sort
+  button. Type a substring and press Enter to narrow that one column. These
+  boxes combine (AND) with the query and structured conditions, and matches
+  are highlighted in the grid.
 
 Cases (File and Case menus)
   A case groups several timelines in one database (.tlxdb), chosen

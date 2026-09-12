@@ -62,7 +62,8 @@ matches one column (case-insensitive by default), and terms combine with
 `AND`/`OR`/`NOT` and parentheses, e.g.
 `Summary=derp AND (tag=bad OR tag=suspicious)`. Wrap a value in `/…/` for a
 regular expression. Each column header also has a box that filters just that
-column. "Tagged only" limits the view to annotated rows.
+column; press Enter to apply. "Tagged only" limits the view to annotated rows.
+Whatever the filter matches is highlighted in the grid.
 
 ## Running
 

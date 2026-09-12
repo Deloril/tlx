@@ -123,11 +123,17 @@ func (a *App) newTable() *bigTable {
 		a.updateCell(id, o)
 	}
 	t.ShowHeaderRow = true
+	// The header holds the sort button and a per-column filter box side by side —
+	// one row tall on purpose. Stacking them vertically makes every data row twice
+	// as tall (Fyne sizes data rows to the header's height), which is why the box
+	// sits beside the button rather than under it.
 	t.CreateHeader = func() fyne.CanvasObject {
-		b := widget.NewButton("", nil)
-		b.Alignment = widget.ButtonAlignLeading
-		b.Importance = widget.LowImportance
-		return b
+		sort := widget.NewButton("", nil)
+		sort.Alignment = widget.ButtonAlignLeading
+		sort.Importance = widget.LowImportance
+		filter := widget.NewEntry()
+		filter.SetPlaceHolder("filter…")
+		return container.NewBorder(nil, nil, sort, nil, filter)
 	}
 	t.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		a.updateHeader(id, o)
@@ -219,24 +225,71 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 }
 
 func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
-	btn, ok := o.(*widget.Button)
+	box, ok := o.(*fyne.Container)
 	if !ok {
+		return
+	}
+	var btn *widget.Button
+	var filter *widget.Entry
+	for _, obj := range box.Objects {
+		switch w := obj.(type) {
+		case *widget.Button:
+			btn = w
+		case *widget.Entry:
+			filter = w
+		}
+	}
+	if btn == nil || filter == nil {
 		return
 	}
 	// Only column headers are shown (ShowHeaderRow); guard other callbacks.
 	if id.Col < 0 || id.Col >= len(a.visible) {
 		btn.SetText("")
 		btn.OnTapped = nil
+		filter.OnChanged = nil
+		filter.OnSubmitted = nil
+		filter.SetText("")
 		return
 	}
 	col := a.cols[a.visible[id.Col]]
+	ref := col.ref
 	title := col.title
-	if arrow := a.sortArrow(col.ref); arrow != "" {
+	if arrow := a.sortArrow(ref); arrow != "" {
 		title += " " + arrow
 	}
 	btn.SetText(title)
-	ref := col.ref
 	btn.OnTapped = func() { a.sortByColumn(ref) }
+
+	// Per-column filter box. Detach OnChanged before syncing the text so setting
+	// it doesn't fire the handler; only overwrite when it actually differs, so a
+	// refresh never disturbs the caret of a box being typed into.
+	want := a.colFilter[ref]
+	filter.OnChanged = nil
+	if filter.Text != want {
+		filter.SetText(want)
+	}
+	filter.OnChanged = func(s string) {
+		if a.suppressFilter {
+			return
+		}
+		a.setColFilter(ref, s) // stored now; Enter applies (see OnSubmitted)
+	}
+	filter.OnSubmitted = func(s string) {
+		a.setColFilter(ref, s)
+		a.applySearch()
+	}
+}
+
+// setColFilter records (or clears) a column's quick-filter text.
+func (a *App) setColFilter(ref model.ColumnRef, s string) {
+	if a.colFilter == nil {
+		a.colFilter = map[model.ColumnRef]string{}
+	}
+	if s == "" {
+		delete(a.colFilter, ref)
+		return
+	}
+	a.colFilter[ref] = s
 }
 
 func (a *App) sortArrow(ref model.ColumnRef) string {
