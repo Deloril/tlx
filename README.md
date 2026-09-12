@@ -1,5 +1,11 @@
 # Timeline explorer
 
+> **This code is entirely AI-generated.** Every line was written by an AI
+> assistant. None of it has been hand-written, and none of it has been read,
+> reviewed or audited by a person. Use it accordingly: read the code yourself
+> before you trust it with real evidence, and don't assume it's correct or safe
+> because it compiles and runs.
+
 A native desktop viewer and annotator for large forensic CSV timelines — the
 kind Eric Zimmerman's tools emit (`Alert, Tag, Timestamp, Field, Summary` and
 similar). It opens multi-GB files without reading them into memory, and lets you
@@ -96,3 +102,9 @@ cross-compile with a mingw-w64 toolchain:
     cmd/gentestdata   synthetic timeline generator for load testing
     internal/model    the engine — indexing, view, session, export (pure Go, tested)
     internal/gui      the Fyne front end
+
+## License
+
+MIT — see [LICENSE](LICENSE). Use it for anything, commercial or not; the only
+condition is that you keep the copyright and licence notice. No warranty (see
+the AI-generated disclaimer above).
