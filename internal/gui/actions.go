@@ -645,9 +645,11 @@ Keyboard
   Ctrl+S   save                Ctrl+E  export view
   Ctrl+B   toggle detail pane  Ctrl+L  toggle views sidebar
   t        tag selected row    c       comment row
-  Click a header to sort; click again to reverse. Type in the box under
-  a header to filter that column, then press Enter to apply. The Clear
-  filters button (toolbar) drops every filter at once, same as Esc.
+  Ctrl+Shift+F  toggle per-column filter row
+  Click a header to sort; click again to reverse. The Filter row button
+  (or Ctrl+Shift+F) shows a box under each header to filter that column;
+  press Enter to apply. It is off by default because it makes rows taller.
+  The Clear filters button (toolbar) drops every filter at once, same as Esc.
 
 Selecting rows
   Click        select one row
@@ -714,11 +716,12 @@ Filtering
   Enter in the query box does the same. The "#" column keeps each row's
   original CSV line number even after filtering or sorting.
 
-  Per-column boxes: each header has a small filter box under its sort
-  button. Type a substring and press Enter to narrow that one column. A lone
-  * keeps only rows where that column is non-empty. These boxes combine (AND)
-  with the query and structured conditions, and matches are highlighted in
-  the grid.
+  Per-column boxes: the Filter row button (or Ctrl+Shift+F) reveals a small
+  filter box under each header's sort button. Type a substring and press Enter
+  to narrow that one column. A lone * keeps only rows where that column is
+  non-empty. These boxes combine (AND) with the query and structured
+  conditions, and matches are highlighted in the grid and hover tooltip. The
+  filter row is off by default because it makes the grid rows taller.
 
 Existing tag/comment columns
   If a timeline already has a Tags column (Tag/Tags) or a comment column

@@ -121,6 +121,14 @@ type App struct {
 	// by the boxes under each column header and by saved views' col_filters.
 	colFilter map[model.ColumnRef]string
 
+	// showFilters toggles the per-column filter boxes under the headers. Off by
+	// default: headers are a single row and data rows stay compact. On: each
+	// header grows a filter box beneath its title, which makes data rows taller
+	// (Fyne sizes cells to max(cell, header) template height). filterRowBtn is the
+	// toolbar toggle, restyled to show the current state.
+	showFilters  bool
+	filterRowBtn *widget.Button
+
 	// hl marks the substrings the active filter matches, so the grid can
 	// highlight them. Rebuilt on every apply; nil or empty means no highlight.
 	hl *model.Highlighter
@@ -368,6 +376,8 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 	viewsBtn := widget.NewButtonWithIcon("Views", theme.ListIcon(), a.toggleViewsSidebar)
 	filterBtn := widget.NewButtonWithIcon("Filter", theme.SearchIcon(), a.toggleFilterWindow)
 	clearBtn := widget.NewButtonWithIcon("Clear filters", theme.ContentClearIcon(), a.clearFilter)
+	a.filterRowBtn = widget.NewButtonWithIcon("Filter row", theme.VisibilityIcon(), a.toggleFilterRow)
+	a.updateFilterRowButton()
 	colsBtn := widget.NewButtonWithIcon("Columns", theme.ViewFullScreenIcon(), a.columnPicker)
 	sidebarBtn := widget.NewButtonWithIcon("Sidebar", theme.MenuIcon(), a.toggleSidebar)
 	a.themeBtn = widget.NewButtonWithIcon("", theme.ColorPaletteIcon(), a.toggleTheme)
@@ -376,7 +386,7 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 
 	left := container.NewHBox(viewsBtn, openBtn, saveBtn, exportBtn, widget.NewSeparator(),
 		widget.NewLabel("Mode:"), a.modeSelect, widget.NewSeparator(),
-		tagBtn, commentBtn, widget.NewSeparator(), filterBtn, clearBtn)
+		tagBtn, commentBtn, widget.NewSeparator(), filterBtn, a.filterRowBtn, clearBtn)
 	right := container.NewHBox(sidebarBtn, a.themeBtn, colsBtn, helpBtn)
 	return container.NewBorder(nil, nil, left, right, nil)
 }
@@ -426,6 +436,43 @@ func (a *App) selectedMaster() int {
 func (a *App) refreshTable() {
 	a.table.Refresh()
 	a.refreshStatus()
+}
+
+// toggleFilterRow shows or hides the per-column filter boxes under the headers.
+// The header template determines both the header and data-row height, so the
+// table has to be rebuilt for the change to take. Active filters live in
+// a.colFilter, not in the widgets, so they survive the toggle either way.
+func (a *App) toggleFilterRow() {
+	a.showFilters = !a.showFilters
+	a.updateFilterRowButton()
+	a.rebuildTable()
+}
+
+// updateFilterRowButton restyles the toolbar toggle to reflect whether the
+// filter row is showing.
+func (a *App) updateFilterRowButton() {
+	if a.filterRowBtn == nil {
+		return
+	}
+	if a.showFilters {
+		a.filterRowBtn.Importance = widget.HighImportance
+	} else {
+		a.filterRowBtn.Importance = widget.MediumImportance
+	}
+	a.filterRowBtn.Refresh()
+}
+
+// rebuildTable recreates the grid in place, e.g. after toggling the filter row.
+// The view, selection and column state all live on the App, so the fresh table
+// picks them up on its first refresh.
+func (a *App) rebuildTable() {
+	if a.split == nil {
+		return
+	}
+	a.table = a.newTable()
+	a.split.Leading = a.table
+	a.split.Refresh()
+	a.refreshTable()
 }
 
 // Run shows the window and blocks until it closes.

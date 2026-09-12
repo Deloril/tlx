@@ -61,11 +61,13 @@ The filter box takes a query. A bare word matches any column; `Field=value`
 matches one column (case-insensitive by default), and terms combine with
 `AND`/`OR`/`NOT` and parentheses, e.g.
 `Summary=derp AND (tag=bad OR tag=suspicious)`. Wrap a value in `/…/` for a
-regular expression. Each column header also has a box under it that filters
-just that column; press Enter to apply, and a lone `*` keeps rows where the
-column is non-empty. The toolbar's Clear filters button (or Esc) drops
-everything at once. "Tagged only" limits the view to annotated rows. Whatever
-the filter matches is highlighted in the grid.
+regular expression. The toolbar's Filter row button (or Ctrl+Shift+F) reveals a
+box under each column header that filters just that column; press Enter to
+apply, and a lone `*` keeps rows where the column is non-empty. The filter row
+is off by default because it makes the grid rows taller. The Clear filters
+button (or Esc) drops everything at once. "Tagged only" limits the view to
+annotated rows. Whatever the filter matches is highlighted in the grid and in
+the hover tooltip.
 
 Right-click a cell holding a timestamp for "Filter ±5 min around this time",
 which narrows that column to a 5-minute window either side of the value.

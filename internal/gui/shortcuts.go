@@ -20,6 +20,7 @@ func (a *App) registerShortcuts() {
 	}
 
 	add(fyne.KeyF, fyne.KeyModifierControl, a.focusFilterWindow)
+	add(fyne.KeyF, fyne.KeyModifierControl|fyne.KeyModifierShift, a.toggleFilterRow)
 	add(fyne.KeyG, fyne.KeyModifierControl, a.gotoLine)
 	add(fyne.KeyS, fyne.KeyModifierControl, a.save)
 	add(fyne.KeyE, fyne.KeyModifierControl, a.export)

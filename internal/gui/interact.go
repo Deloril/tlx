@@ -463,14 +463,21 @@ func (a *App) hoverCell(id widget.TableCellID, at fyne.Position) {
 		a.hideTooltip()
 		return
 	}
-	a.showTooltip(full, at)
+	// Highlight the same matches the grid does. Spans are computed on the raw
+	// text (not the one-line form) so the byte offsets line up with what the
+	// tooltip actually renders.
+	a.showTooltip(full, a.hl.Spans(ref, full), at)
 }
 
-func (a *App) showTooltip(text string, at fyne.Position) {
+func (a *App) showTooltip(text string, spans [][2]int, at fyne.Position) {
 	if a.hoverLayer == nil {
 		return
 	}
-	a.hoverText.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: text}}
+	if len(spans) > 0 {
+		a.hoverText.Segments = highlightSegments(text, spans)
+	} else {
+		a.hoverText.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: text}}
+	}
 	a.hoverText.Wrapping = fyne.TextWrapWord
 	a.hoverText.Resize(fyne.NewSize(460, a.hoverText.MinSize().Height))
 

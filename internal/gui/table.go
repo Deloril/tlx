@@ -123,8 +123,8 @@ func (a *App) newTable() *bigTable {
 		a.updateCell(id, o)
 	}
 	t.ShowHeaderRow = true
-	// Two-row header: the sort button (column title) on top, the per-column
-	// filter box directly underneath, stacked with a VBox.
+	// The header is a VBox holding the sort button (the column title). When the
+	// filter row is toggled on it grows a filter box beneath the title.
 	//
 	// Fyne offers no way to make the header row taller than data rows without
 	// populating the table's rowHeights map (via SetRowHeight(-1, …)). Doing that
@@ -133,12 +133,15 @@ func (a *App) newTable() *bigTable {
 	// thousand cuts on a multi-million-row file (choppy scroll, runaway memory).
 	// So we keep rowHeights empty and let the header's own MinSize drive the row
 	// height. The cost is that data rows inherit the header's height (Fyne sizes
-	// cells to max(cell, header) template MinSize), so they are a little taller;
-	// that trade keeps scrolling flat on huge timelines.
+	// cells to max(cell, header) template MinSize), so the filter row makes data
+	// rows taller — which is why it is off by default and toggled on demand.
 	t.CreateHeader = func() fyne.CanvasObject {
 		sort := widget.NewButton("", nil)
 		sort.Alignment = widget.ButtonAlignLeading
 		sort.Importance = widget.LowImportance
+		if !a.showFilters {
+			return container.NewVBox(sort)
+		}
 		filter := widget.NewEntry()
 		filter.SetPlaceHolder("filter…")
 		return container.NewVBox(sort, filter)
@@ -248,16 +251,18 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 			filter = w
 		}
 	}
-	if btn == nil || filter == nil {
+	if btn == nil {
 		return
 	}
 	// Only column headers are shown (ShowHeaderRow); guard other callbacks.
 	if id.Col < 0 || id.Col >= len(a.visible) {
 		btn.SetText("")
 		btn.OnTapped = nil
-		filter.OnChanged = nil
-		filter.OnSubmitted = nil
-		filter.SetText("")
+		if filter != nil {
+			filter.OnChanged = nil
+			filter.OnSubmitted = nil
+			filter.SetText("")
+		}
 		return
 	}
 	col := a.cols[a.visible[id.Col]]
@@ -269,6 +274,10 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 	btn.SetText(title)
 	btn.OnTapped = func() { a.sortByColumn(ref) }
 
+	// The filter box is present only while the filter row is toggled on.
+	if filter == nil {
+		return
+	}
 	// Per-column filter box. Detach OnChanged before syncing the text so setting
 	// it doesn't fire the handler; only overwrite when it actually differs, so a
 	// refresh never disturbs the caret of a box being typed into.
