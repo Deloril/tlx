@@ -74,11 +74,19 @@ func (a *App) applySearch() {
 }
 
 func (a *App) clearFilter() {
+	// Reset the persistent filter widgets without letting their change callbacks
+	// re-apply mid-clear.
+	a.suppressFilter = true
 	a.search.SetText("")
 	a.taggedChk.SetChecked(false)
+	a.caseChk.SetChecked(false)
+	a.suppressFilter = false
 	a.conds = nil
 	a.condsAny = false
 	a.colFilter = map[model.ColumnRef]string{}
+	if a.view == nil { // view torn down (e.g. between cases); nothing to filter
+		return
+	}
 	a.view.Apply(model.FilterSpec{})
 	a.clearSelection()
 	a.refreshTable()

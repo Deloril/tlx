@@ -33,16 +33,24 @@ func (a *App) hideFilterWindow() {
 		a.filterWin.Hide()
 	}
 	a.filterWinShown = false
+	// Drop the row widgets so commitFilter can't read stale rows while hidden;
+	// they are rebuilt on the next show.
+	a.filterRows = nil
 }
 
 // focusFilterWindow shows the window (building it if needed) and puts the caret
-// in the query box, so / and Ctrl+F drop straight into typing a filter.
+// in the query box, so / and Ctrl+F drop straight into typing a filter. When the
+// window is already open it just refocuses, so any unapplied edits survive.
 func (a *App) focusFilterWindow() {
 	if a.idx == nil {
 		return
 	}
-	a.showFilterWindow()
-	if a.search != nil {
+	if a.filterWinShown {
+		a.filterWin.RequestFocus()
+	} else {
+		a.showFilterWindow()
+	}
+	if a.filterWin != nil && a.search != nil {
 		a.filterWin.Canvas().Focus(a.search)
 	}
 }

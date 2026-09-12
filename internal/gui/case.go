@@ -93,6 +93,7 @@ func (a *App) clearView() {
 	a.selRow, a.selCol = -1, -1
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
+	a.hideFilterWindow() // the filter window acts on a.view, which is now nil
 
 	msg := widget.NewLabel("Add a timeline from the Case menu to begin.")
 	add := widget.NewButtonWithIcon("Add timeline…", theme.ContentAddIcon(), a.addTimelineToCase)
@@ -309,10 +310,17 @@ func (a *App) showMasterTimeline() {
 func masterGrid(entries []casefile.MasterEntry) (headers []string, records [][]string) {
 	fixed := []string{"Time", "Timeline", "Tags", "Comment"}
 
-	// Ordered union of display headers across all entries.
+	// Ordered union of display headers across all entries. Duplicate names within
+	// one timeline collapse to a single master column (the later cell wins for
+	// that row) — that is the point of merging, so renaming two columns to the
+	// same name inside one timeline is lossy by design.
 	var canonical []string
 	seen := map[string]int{} // name -> index within canonical
+	needSummary := false     // some entry has no cell snapshot (pre-merge save)
 	for _, e := range entries {
+		if len(e.Cells) == 0 {
+			needSummary = true
+		}
 		for _, h := range e.DisplayHeaders {
 			if h == "" {
 				continue
@@ -324,12 +332,13 @@ func masterGrid(entries []casefile.MasterEntry) (headers []string, records [][]s
 		}
 	}
 
-	useSummary := len(canonical) == 0
 	headers = append([]string(nil), fixed...)
-	if useSummary {
+	headers = append(headers, canonical...)
+	if needSummary {
+		// Keep the content of rows snapshotted before the merge feature visible;
+		// they carry no cells but do carry a summary. Re-saving each timeline
+		// rebuilds its snapshot with cells.
 		headers = append(headers, "Summary")
-	} else {
-		headers = append(headers, canonical...)
 	}
 
 	records = make([][]string, len(entries))
@@ -341,11 +350,6 @@ func masterGrid(entries []casefile.MasterEntry) (headers []string, records [][]s
 			tval = e.Time.UTC().Format("2006-01-02 15:04:05.000")
 		}
 		rec := []string{tval, e.Timeline, strings.Join(e.Tags, ", "), e.Comment}
-		if useSummary {
-			rec = append(rec, e.Summary)
-			records[i] = rec
-			continue
-		}
 		// Place each cell under its canonical column via this entry's own
 		// display headers.
 		cells := make([]string, len(canonical))
@@ -357,7 +361,11 @@ func masterGrid(entries []casefile.MasterEntry) (headers []string, records [][]s
 				cells[ci] = e.Cells[j]
 			}
 		}
-		records[i] = append(rec, cells...)
+		rec = append(rec, cells...)
+		if needSummary {
+			rec = append(rec, e.Summary)
+		}
+		records[i] = rec
 	}
 	return headers, records
 }

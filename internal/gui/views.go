@@ -245,9 +245,14 @@ func (a *App) applyView(p viewPreset) {
 		}
 		a.colFilter[a.refForTitle(title)] = val
 	}
+	// Set the persistent widgets with callbacks suppressed, so the checkbox
+	// OnChanged doesn't run commitFilter and overwrite the conditions we just
+	// loaded from the view with the (stale) filter-window rows.
+	a.suppressFilter = true
 	a.search.SetText(p.Query)
 	a.caseChk.SetChecked(p.Cased)
 	a.taggedChk.SetChecked(p.TaggedOnly)
+	a.suppressFilter = false
 	a.applySearch() // applies query + conds + tagged-only together
 
 	// Apply the saved ordering, if any.
