@@ -151,8 +151,12 @@ func New() *App {
 // they keep their state and callbacks whether the filter window is open, closed
 // or being rebuilt for a new file.
 func (a *App) buildFilterWidgets() {
-	a.search = widget.NewEntry()
-	a.search.SetPlaceHolder("text, or field=value AND (tag=bad OR tag=suspicious). /regex/ for regex. Enter to apply")
+	a.search = widget.NewMultiLineEntry()
+	a.search.SetPlaceHolder("text, or field=value AND (tag=bad OR tag=suspicious). /regex/ for regex. Enter to apply, Shift+Enter for newline")
+	a.search.Wrapping = fyne.TextWrapWord
+	// At least five rows on open; the multi-line entry grows past that as more
+	// lines are added.
+	a.search.SetMinRowsVisible(5)
 	a.search.OnSubmitted = func(string) { a.commitFilter() }
 	a.taggedChk = widget.NewCheck("Tagged only", func(bool) { a.commitFilter() })
 	a.caseChk = widget.NewCheck("Case sensitive", func(bool) { a.commitFilter() })
