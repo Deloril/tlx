@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"tlx/internal/model"
@@ -108,9 +109,15 @@ func (a *App) newTable() *bigTable {
 		bg := canvas.NewRectangle(color.Transparent)
 		lbl := widget.NewLabel("")
 		lbl.Truncation = fyne.TextTruncateEllipsis
+		// rich is used only when a cell has filter matches to highlight; the plain
+		// label handles the common case (and truncates cleanly).
+		rich := widget.NewRichText()
+		rich.Truncation = fyne.TextTruncateEllipsis
+		rich.Wrapping = fyne.TextWrapOff
+		rich.Hide()
 		entry := newInlineEntry()
 		entry.Hide()
-		return container.NewStack(bg, lbl, entry)
+		return container.NewStack(bg, lbl, rich, entry)
 	}
 	t.UpdateCell = func(id widget.TableCellID, o fyne.CanvasObject) {
 		a.updateCell(id, o)
@@ -144,18 +151,20 @@ func (a *App) newTable() *bigTable {
 
 func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	stack, ok := o.(*fyne.Container)
-	if !ok || len(stack.Objects) < 3 {
+	if !ok || len(stack.Objects) < 4 {
 		return
 	}
 	bg, _ := stack.Objects[0].(*canvas.Rectangle)
 	lbl, _ := stack.Objects[1].(*widget.Label)
-	entry, _ := stack.Objects[2].(*inlineEntry)
-	if lbl == nil || entry == nil {
+	rich, _ := stack.Objects[2].(*widget.RichText)
+	entry, _ := stack.Objects[3].(*inlineEntry)
+	if lbl == nil || rich == nil || entry == nil {
 		return
 	}
 	if id.Col < 0 || id.Col >= len(a.visible) || id.Row < 0 || id.Row >= a.view.Len() {
 		lbl.SetText("")
 		entry.Hide()
+		rich.Hide()
 		lbl.Show()
 		return
 	}
@@ -166,6 +175,7 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	// Inline edit: this exact cell is being edited and the column is editable.
 	if a.editing && id.Row == a.editRow && id.Col == a.editCol && a.cellEditable(ref) {
 		lbl.Hide()
+		rich.Hide()
 		entry.SetText(val)
 		entry.onCommit = func(s string) { a.commitInlineEdit(master, ref, s) }
 		entry.onCancel = func() { a.cancelInlineEdit() }
@@ -178,8 +188,17 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		}
 	} else {
 		entry.Hide()
-		lbl.SetText(oneLine(val))
-		lbl.Show()
+		disp := oneLine(val)
+		if spans := a.hl.Spans(ref, disp); len(spans) > 0 {
+			rich.Segments = highlightSegments(disp, spans)
+			rich.Refresh()
+			lbl.Hide()
+			rich.Show()
+		} else {
+			lbl.SetText(disp)
+			lbl.Show()
+			rich.Hide()
+		}
 	}
 
 	if bg != nil {
@@ -278,6 +297,36 @@ func (a *App) clearSelection() {
 	a.selected = map[int]bool{}
 	a.anchorView = -1
 	a.cancelInlineEdit()
+}
+
+// highlightSegments splits s into rich-text segments, colouring the byte ranges
+// in spans (the filter matches) so they stand out from the surrounding text. All
+// segments are inline, so the cell stays on one line.
+func highlightSegments(s string, spans [][2]int) []widget.RichTextSegment {
+	var segs []widget.RichTextSegment
+	plain := func(text string) {
+		if text != "" {
+			segs = append(segs, &widget.TextSegment{Text: text, Style: widget.RichTextStyle{Inline: true}})
+		}
+	}
+	pos := 0
+	for _, sp := range spans {
+		if sp[0] < pos || sp[1] > len(s) { // defensive: skip out-of-range spans
+			continue
+		}
+		plain(s[pos:sp[0]])
+		segs = append(segs, &widget.TextSegment{
+			Text: s[sp[0]:sp[1]],
+			Style: widget.RichTextStyle{
+				Inline:    true,
+				ColorName: theme.ColorNamePrimary,
+				TextStyle: fyne.TextStyle{Bold: true},
+			},
+		})
+		pos = sp[1]
+	}
+	plain(s[pos:])
+	return segs
 }
 
 // oneLine collapses embedded newlines so a multi-line Summary shows as a single

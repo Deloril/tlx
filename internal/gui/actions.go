@@ -68,6 +68,7 @@ func (a *App) applySearch() {
 		}
 		return
 	}
+	a.hl = a.view.BuildHighlighter(spec) // highlight what the filter matched
 	a.clearSelection()
 	a.table.ScrollTo(widget.TableCellID{Row: 0, Col: 0})
 	a.refreshTable()
@@ -84,6 +85,7 @@ func (a *App) clearFilter() {
 	a.conds = nil
 	a.condsAny = false
 	a.colFilter = map[model.ColumnRef]string{}
+	a.hl = nil
 	if a.view == nil { // view torn down (e.g. between cases); nothing to filter
 		return
 	}

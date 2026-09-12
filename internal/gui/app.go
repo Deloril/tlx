@@ -110,11 +110,13 @@ type App struct {
 	conds    []model.ColumnCond
 	condsAny bool
 
-	// colFilter holds per-column quick-filter text keyed by column ref. Nothing
-	// in the UI populates it now (filtering moved to the filter window), but
-	// saved views created earlier may carry col_filters, so applyView still
-	// honours them and applySearch passes them through.
+	// colFilter holds per-column quick-filter text keyed by column ref, populated
+	// by the boxes under each column header and by saved views' col_filters.
 	colFilter map[model.ColumnRef]string
+
+	// hl marks the substrings the active filter matches, so the grid can
+	// highlight them. Rebuilt on every apply; nil or empty means no highlight.
+	hl *model.Highlighter
 
 	// Inline cell editing state (view coordinates).
 	editing     bool
@@ -292,6 +294,7 @@ func (a *App) resetFilterState() {
 	a.conds = nil
 	a.condsAny = false
 	a.colFilter = map[model.ColumnRef]string{}
+	a.hl = nil
 	if a.search != nil {
 		a.search.SetText("")
 	}
