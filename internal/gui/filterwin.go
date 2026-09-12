@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/model"
+	"tlx/internal/model"
 )
 
 // The filter window is a separate, non-modal OS window that can be dragged

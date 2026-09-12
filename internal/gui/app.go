@@ -13,8 +13,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/casefile"
-	"timeline-engine/internal/model"
+	"tlx/internal/casefile"
+	"tlx/internal/model"
 )
 
 // column is one logical column shown in the grid: either a virtual annotation

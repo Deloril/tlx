@@ -9,7 +9,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/model"
+	"tlx/internal/model"
 )
 
 // Saved views are application-level, not tied to any case or file. They are

@@ -12,7 +12,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/model"
+	"tlx/internal/model"
 )
 
 func (a *App) showError(err error) {

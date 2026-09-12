@@ -10,7 +10,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/model"
+	"tlx/internal/model"
 )
 
 // inlineEntry is a single-line entry used to edit a cell in place. Return

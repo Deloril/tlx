@@ -11,7 +11,7 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/model"
+	"tlx/internal/model"
 )
 
 // bigTable wraps widget.Table to dodge a Fyne memory blow-up on huge row counts.

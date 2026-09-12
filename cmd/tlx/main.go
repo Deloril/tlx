@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"timeline-engine/internal/gui"
-	"timeline-engine/internal/model"
+	"tlx/internal/gui"
+	"tlx/internal/model"
 )
 
 func main() {

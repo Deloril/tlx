@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"time"
 
-	"timeline-engine/internal/model"
+	"tlx/internal/model"
 )
 
 func main() {

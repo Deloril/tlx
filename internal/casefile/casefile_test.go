@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"timeline-engine/internal/model"
+	"tlx/internal/model"
 )
 
 func memIndex(headers []string, records [][]string) *model.Index {

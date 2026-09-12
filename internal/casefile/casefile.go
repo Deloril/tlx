@@ -19,7 +19,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"timeline-engine/internal/model"
+	"tlx/internal/model"
 )
 
 const schemaVersion = 1

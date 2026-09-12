@@ -1,4 +1,4 @@
-module timeline-engine
+module tlx
 
 go 1.22.0
 

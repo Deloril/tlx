@@ -12,8 +12,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/casefile"
-	"timeline-engine/internal/model"
+	"tlx/internal/casefile"
+	"tlx/internal/model"
 )
 
 // buildMainMenu assembles the window menu bar. The Case menu is rebuilt from
