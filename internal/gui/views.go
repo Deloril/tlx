@@ -261,4 +261,7 @@ func (a *App) applyView(p viewPreset) {
 		}
 	}
 	a.refreshTable()
+	if a.filterWinShown { // mirror the applied query and conditions in the window
+		a.showFilterWindow()
+	}
 }

@@ -44,9 +44,12 @@ func (a *App) caseMenuItems() []*fyne.MenuItem {
 		hint.Disabled = true
 		return []*fyne.MenuItem{hint}
 	}
+	renameItem := fyne.NewMenuItem("Rename columns…", a.renameColumns)
+	renameItem.Disabled = a.curTimeline == nil || a.masterMode
 	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("★ Master timeline", a.showMasterTimeline),
 		fyne.NewMenuItem("Add timeline…", a.addTimelineToCase),
+		renameItem,
 		fyne.NewMenuItemSeparator(),
 	}
 	tls, err := a.cse.Timelines()
@@ -192,8 +195,78 @@ func (a *App) openTimelineWithIndex(tl casefile.TimelineMeta, idx *model.Index) 
 	a.masterMode = false
 	a.masterEntries = nil
 	a.annotCols = true
+	a.colNames = tlCopy.DisplayHeaders // renamed columns show under their new names
 	a.reloadWith(idx, sess)
 	a.rebuildCaseMenu()
+}
+
+// renameColumns lets the user give the open timeline's columns display names,
+// stored in the case. Matching names across timelines merge into one column in
+// the master view.
+func (a *App) renameColumns() {
+	if a.cse == nil || a.curTimeline == nil || a.masterMode {
+		return
+	}
+	src := a.idx.Headers()
+	entries := make([]*widget.Entry, len(src))
+	form := container.NewVBox()
+	for i, h := range src {
+		e := widget.NewEntry()
+		cur := h
+		if i < len(a.colNames) && a.colNames[i] != "" {
+			cur = a.colNames[i]
+		}
+		e.SetText(cur)
+		entries[i] = e
+		form.Add(container.NewBorder(nil, nil, widget.NewLabel(h+" →"), nil, e))
+	}
+	hint := widget.NewLabel("Rename columns so they match across timelines; columns sharing a name merge into one column in the master view. Blank falls back to the original name.")
+	hint.Wrapping = fyne.TextWrapWord
+	content := container.NewBorder(hint, nil, nil, nil, container.NewVScroll(form))
+
+	d := dialog.NewCustomConfirm("Rename columns — "+a.curTimeline.Name, "Save", "Cancel", content, func(ok bool) {
+		if !ok {
+			return
+		}
+		names := make([]string, len(src))
+		for i := range src {
+			n := strings.TrimSpace(entries[i].Text)
+			if n == "" {
+				n = src[i]
+			}
+			names[i] = n
+		}
+		if err := a.cse.SetColumnNames(a.curTimeline.ID, names); err != nil {
+			a.showError(err)
+			return
+		}
+		a.curTimeline.DisplayHeaders = names
+		a.colNames = names
+		a.applyColumnTitles()
+	}, a.win)
+	d.Resize(a.dialogSize(560, 620))
+	d.Show()
+}
+
+// applyColumnTitles updates data-column titles in place from a.colNames,
+// preserving each column's width and visibility, and repaints the header.
+func (a *App) applyColumnTitles() {
+	src := a.idx.Headers()
+	for i := range a.cols {
+		ref := a.cols[i].ref
+		if ref < 0 || int(ref) >= len(src) { // skip virtual annotation columns
+			continue
+		}
+		title := src[int(ref)]
+		if int(ref) < len(a.colNames) && a.colNames[int(ref)] != "" {
+			title = a.colNames[int(ref)]
+		}
+		a.cols[i].title = title
+	}
+	if a.table != nil {
+		a.table.Refresh()
+	}
+	a.refreshStatus()
 }
 
 // showMasterTimeline builds a read-only, time-sorted view of every tagged row
@@ -208,17 +281,7 @@ func (a *App) showMasterTimeline() {
 			a.showError(err)
 			return
 		}
-		headers := []string{"Time", "Timeline", "Tags", "Comment", "Summary"}
-		records := make([][]string, len(entries))
-		for i, e := range entries {
-			tval := e.TimeRaw
-			if e.HasTime {
-				// time_unix is stored in UTC; render it in UTC so forensic
-				// timestamps are not shifted by the viewer's local zone.
-				tval = e.Time.UTC().Format("2006-01-02 15:04:05.000")
-			}
-			records[i] = []string{tval, e.Timeline, strings.Join(e.Tags, ", "), e.Comment, e.Summary}
-		}
+		headers, records := masterGrid(entries)
 		idx := model.NewMemoryIndex(headers, records)
 		sess := model.NewSession("(master)")
 		sess.SetMode(model.ReadOnly)
@@ -227,6 +290,7 @@ func (a *App) showMasterTimeline() {
 		a.curTimeline = nil
 		a.masterMode = true
 		a.annotCols = false
+		a.colNames = nil // master headers are already the canonical names
 		a.reloadWith(idx, sess)
 		a.rebuildCaseMenu()
 		if len(entries) == 0 {
@@ -234,6 +298,68 @@ func (a *App) showMasterTimeline() {
 				"No tagged rows yet. Tag rows in a timeline and save to populate the master view.", a.win)
 		}
 	})
+}
+
+// masterGrid turns the tagged-row entries into the master view's headers and
+// records. Leading columns are fixed (Time, Timeline, Tags, Comment); the rest
+// is the ordered union of every timeline's display headers, so columns renamed
+// to the same name across timelines line up in one column. Entries snapshotted
+// before the merge feature carry no cells, so they fall back to a Summary
+// column when no canonical columns are available.
+func masterGrid(entries []casefile.MasterEntry) (headers []string, records [][]string) {
+	fixed := []string{"Time", "Timeline", "Tags", "Comment"}
+
+	// Ordered union of display headers across all entries.
+	var canonical []string
+	seen := map[string]int{} // name -> index within canonical
+	for _, e := range entries {
+		for _, h := range e.DisplayHeaders {
+			if h == "" {
+				continue
+			}
+			if _, ok := seen[h]; !ok {
+				seen[h] = len(canonical)
+				canonical = append(canonical, h)
+			}
+		}
+	}
+
+	useSummary := len(canonical) == 0
+	headers = append([]string(nil), fixed...)
+	if useSummary {
+		headers = append(headers, "Summary")
+	} else {
+		headers = append(headers, canonical...)
+	}
+
+	records = make([][]string, len(entries))
+	for i, e := range entries {
+		tval := e.TimeRaw
+		if e.HasTime {
+			// time_unix is stored in UTC; render it in UTC so forensic
+			// timestamps are not shifted by the viewer's local zone.
+			tval = e.Time.UTC().Format("2006-01-02 15:04:05.000")
+		}
+		rec := []string{tval, e.Timeline, strings.Join(e.Tags, ", "), e.Comment}
+		if useSummary {
+			rec = append(rec, e.Summary)
+			records[i] = rec
+			continue
+		}
+		// Place each cell under its canonical column via this entry's own
+		// display headers.
+		cells := make([]string, len(canonical))
+		for j, h := range e.DisplayHeaders {
+			if j >= len(e.Cells) {
+				break
+			}
+			if ci, ok := seen[h]; ok {
+				cells[ci] = e.Cells[j]
+			}
+		}
+		records[i] = append(rec, cells...)
+	}
+	return headers, records
 }
 
 // openMasterSource opens the timeline behind a master-view row at that row.

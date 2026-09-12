@@ -156,6 +156,58 @@ func TestMasterOrdering(t *testing.T) {
 	}
 }
 
+func TestColumnRenameMergesMaster(t *testing.T) {
+	c := newCase(t)
+	// Two timelines with the same data but differently-named columns.
+	idxA := memIndex([]string{"Timestamp", "Computer", "Message"}, [][]string{
+		{"2026-09-01T08:12:03Z", "ws1", "logon"},
+	})
+	idxB := memIndex([]string{"When", "Host", "Event"}, [][]string{
+		{"2026-09-01T09:00:00Z", "dc1", "kerberoast"},
+	})
+	tlA, _ := c.AddTimeline("wks", idxA, "2026-09-11T00:00:00Z")
+	tlB, _ := c.AddTimeline("dc", idxB, "2026-09-11T00:00:00Z")
+
+	// Rename B's columns to line up with A's names.
+	if err := c.SetColumnNames(tlB.ID, []string{"Timestamp", "Computer", "Message"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.SaveAnnotations(tlA, model.SessionSnapshot{Tags: map[int][]string{0: {"Bad"}}}, idxA); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SaveAnnotations(tlB, model.SessionSnapshot{Tags: map[int][]string{0: {"Bad"}}}, idxB); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := c.Master()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 2 {
+		t.Fatalf("master len = %d, want 2", len(m))
+	}
+	// Both entries carry their cell snapshot; B reports A's canonical names.
+	byName := func(e MasterEntry, name string) string {
+		for i, h := range e.DisplayHeaders {
+			if h == name && i < len(e.Cells) {
+				return e.Cells[i]
+			}
+		}
+		return ""
+	}
+	// Entry order is by time: A (08:12) then B (09:00).
+	if got := byName(m[0], "Computer"); got != "ws1" {
+		t.Errorf("m[0] Computer = %q, want ws1", got)
+	}
+	if got := byName(m[1], "Computer"); got != "dc1" {
+		t.Errorf("m[1] Computer = %q (renamed Host), want dc1", got)
+	}
+	if got := byName(m[1], "Message"); got != "kerberoast" {
+		t.Errorf("m[1] Message = %q (renamed Event), want kerberoast", got)
+	}
+}
+
 func TestRemoveTimeline(t *testing.T) {
 	c := newCase(t)
 	idx := memIndex([]string{"Timestamp", "Msg"}, [][]string{{"2026-09-01T08:12:03Z", "x"}})

@@ -54,10 +54,24 @@ type App struct {
 	visible   []int           // indices into cols that are currently shown
 	sortState []model.SortKey // mirror of view sort keys, for header arrows
 
+	// colNames overrides the data-column titles by source index, used inside a
+	// case so renamed timeline columns show (and merge) under their new names.
+	// Empty means fall back to the index headers.
+	colNames []string
+
 	table  *bigTable
 	detail *fyne.Container
 	scroll *container.Scroll
 	split  *container.Split // table | detail
+
+	// Standalone, non-modal filter window (see filterwin.go). filterConds holds
+	// the structured per-column condition rows; combineSel picks AND/OR.
+	filterWin      fyne.Window
+	filterWinShown bool
+	filterConds    *fyne.Container
+	filterRows     []*filterRow
+	combineSel     *widget.RadioGroup
+	suppressFilter bool // set while resetting filter widgets, to swallow callbacks
 
 	// Left sidebar listing saved views, and the split that holds it beside the
 	// main content. viewsList is the repopulated list of view rows.
@@ -88,8 +102,10 @@ type App struct {
 	conds    []model.ColumnCond
 	condsAny bool
 
-	// colFilter holds the quick-filter text under each column header, keyed by
-	// column ref so it survives column show/hide and reorders.
+	// colFilter holds per-column quick-filter text keyed by column ref. Nothing
+	// in the UI populates it now (filtering moved to the filter window), but
+	// saved views created earlier may carry col_filters, so applyView still
+	// honours them and applySearch passes them through.
 	colFilter map[model.ColumnRef]string
 
 	// Inline cell editing state (view coordinates).
@@ -124,10 +140,22 @@ func New() *App {
 	a.win.Resize(fyne.NewSize(1280, 760))
 	a.win.SetCloseIntercept(a.onClose)
 	a.win.SetMainMenu(a.buildMainMenu())
+	a.buildFilterWidgets()
 	a.buildHoverLayer()
 	a.registerShortcuts()
 	a.showPlaceholder()
 	return a
+}
+
+// buildFilterWidgets creates the freetext query box and its checkboxes once, so
+// they keep their state and callbacks whether the filter window is open, closed
+// or being rebuilt for a new file.
+func (a *App) buildFilterWidgets() {
+	a.search = widget.NewEntry()
+	a.search.SetPlaceHolder("text, or field=value AND (tag=bad OR tag=suspicious). /regex/ for regex. Enter to apply")
+	a.search.OnSubmitted = func(string) { a.commitFilter() }
+	a.taggedChk = widget.NewCheck("Tagged only", func(bool) { a.commitFilter() })
+	a.caseChk = widget.NewCheck("Case sensitive", func(bool) { a.commitFilter() })
 }
 
 // SetStartMode sets the mode used for files opened through the file dialog.
@@ -137,6 +165,7 @@ func (a *App) SetStartMode(m model.Mode) { a.startMode = m }
 func (a *App) OpenInitial(idx *model.Index, sess *model.Session) {
 	a.cse, a.curTimeline, a.masterMode = nil, nil, false
 	a.annotCols = true
+	a.colNames = nil
 	a.reloadWith(idx, sess)
 }
 
@@ -157,7 +186,11 @@ func (a *App) buildColumns() {
 		)
 	}
 	for i, h := range a.idx.Headers() {
-		a.cols = append(a.cols, column{ref: model.ColumnRef(i), title: h, visible: true, width: colWidth(h)})
+		title := h
+		if i < len(a.colNames) && a.colNames[i] != "" {
+			title = a.colNames[i]
+		}
+		a.cols = append(a.cols, column{ref: model.ColumnRef(i), title: title, visible: true, width: colWidth(title)})
 	}
 	a.rebuildVisible()
 }
@@ -224,7 +257,6 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	}
 	a.idx, a.sess = idx, sess
 	a.view = model.NewView(idx, sess)
-	a.colFilter = map[model.ColumnRef]string{}
 	a.sortState = nil
 	a.selRow, a.selCol = -1, -1
 	a.editing, a.editFocused = false, false
@@ -233,6 +265,29 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	a.buildColumns()
 	a.buildUI()
 	a.modeSelect.SetSelected(a.sess.Mode().String())
+	a.resetFilterState() // a fresh file starts unfiltered; clears the query box too
+}
+
+// resetFilterState clears the active filter and its widgets without triggering
+// their change callbacks, then rebuilds the filter window if it is open.
+func (a *App) resetFilterState() {
+	a.suppressFilter = true
+	a.conds = nil
+	a.condsAny = false
+	a.colFilter = map[model.ColumnRef]string{}
+	if a.search != nil {
+		a.search.SetText("")
+	}
+	if a.taggedChk != nil {
+		a.taggedChk.SetChecked(false)
+	}
+	if a.caseChk != nil {
+		a.caseChk.SetChecked(false)
+	}
+	a.suppressFilter = false
+	if a.filterWinShown {
+		a.showFilterWindow()
+	}
 }
 
 // windowTitle reflects the current context: master view, a named timeline in an
@@ -262,17 +317,10 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 	)
 	a.modeSelect.SetSelected(a.sess.Mode().String())
 
-	a.search = widget.NewEntry()
-	a.search.SetPlaceHolder(`Filter: text, or field=value AND (tag=bad OR tag=suspicious). /regex/ for regex. Enter to apply, Esc to clear`)
-	a.search.OnSubmitted = func(string) { a.applySearch() }
-
-	a.taggedChk = widget.NewCheck("Tagged only", func(bool) { a.applySearch() })
-	a.caseChk = widget.NewCheck("Case sensitive", func(bool) { a.applySearch() })
-
 	tagBtn := widget.NewButtonWithIcon("Tag", theme.ContentAddIcon(), a.tagSelected)
 	commentBtn := widget.NewButtonWithIcon("Comment", theme.MailComposeIcon(), a.commentSelected)
 	viewsBtn := widget.NewButtonWithIcon("Views", theme.ListIcon(), a.toggleViewsSidebar)
-	filterBtn := widget.NewButtonWithIcon("Filter", theme.ListIcon(), a.columnFilter)
+	filterBtn := widget.NewButtonWithIcon("Filter", theme.SearchIcon(), a.toggleFilterWindow)
 	colsBtn := widget.NewButtonWithIcon("Columns", theme.ViewFullScreenIcon(), a.columnPicker)
 	sidebarBtn := widget.NewButtonWithIcon("Sidebar", theme.MenuIcon(), a.toggleSidebar)
 	a.themeBtn = widget.NewButtonWithIcon("", theme.ColorPaletteIcon(), a.toggleTheme)
@@ -281,10 +329,9 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 
 	left := container.NewHBox(viewsBtn, openBtn, saveBtn, exportBtn, widget.NewSeparator(),
 		widget.NewLabel("Mode:"), a.modeSelect, widget.NewSeparator(),
-		tagBtn, commentBtn, widget.NewSeparator(), a.taggedChk, a.caseChk)
-	right := container.NewHBox(filterBtn, sidebarBtn, a.themeBtn, colsBtn, helpBtn)
-	// Search stretches in the middle.
-	return container.NewBorder(nil, nil, left, right, a.search)
+		tagBtn, commentBtn, widget.NewSeparator(), filterBtn)
+	right := container.NewHBox(sidebarBtn, a.themeBtn, colsBtn, helpBtn)
+	return container.NewBorder(nil, nil, left, right, nil)
 }
 
 func (a *App) buildStatusBar() fyne.CanvasObject {

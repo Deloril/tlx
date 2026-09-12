@@ -31,8 +31,26 @@ type TimelineMeta struct {
 	SourcePath string
 	Delimiter  string
 	Headers    []string
-	TimeCol    int // index of the timestamp column, or -1 if none detected
-	AddedAt    string
+	// DisplayHeaders are the per-column display names, one per source header.
+	// They start equal to Headers and can be renamed so timelines with
+	// differently-named columns line up under shared names in the master view.
+	DisplayHeaders []string
+	TimeCol        int // index of the timestamp column, or -1 if none detected
+	AddedAt        string
+}
+
+// displayHeadersOrRaw returns t.DisplayHeaders, padded from Headers where a
+// display name is missing, so callers always get one name per source column.
+func (t TimelineMeta) displayHeadersOrRaw() []string {
+	out := make([]string, len(t.Headers))
+	for i := range t.Headers {
+		if i < len(t.DisplayHeaders) && t.DisplayHeaders[i] != "" {
+			out[i] = t.DisplayHeaders[i]
+		} else {
+			out[i] = t.Headers[i]
+		}
+	}
+	return out
 }
 
 // MasterEntry is one tagged row surfaced in the master timeline. Content is
@@ -48,6 +66,11 @@ type MasterEntry struct {
 	Tags       []string
 	Comment    string
 	Summary    string
+	// Cells is the snapshot of the row's source cell values (edits applied),
+	// and DisplayHeaders names them, so the master view can place each value
+	// under its canonical column. Both may be empty for pre-merge snapshots.
+	Cells          []string
+	DisplayHeaders []string
 }
 
 // Case is an open case database.
@@ -168,7 +191,44 @@ CREATE TABLE IF NOT EXISTS tagged_snapshot (
 	} else if err != nil {
 		return err
 	}
+	return c.migrate()
+}
+
+// migrate applies additive schema changes on top of the base DDL so older case
+// files keep working. Each step is guarded, so running it repeatedly is safe.
+func (c *Case) migrate() error {
+	// Merged master view: per-timeline display names and a per-tagged-row cell
+	// snapshot. Both default to empty on old rows; readers fall back gracefully.
+	if err := c.addColumnIfMissing("timelines", "display_headers", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := c.addColumnIfMissing("tagged_snapshot", "cells", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
 	return nil
+}
+
+// addColumnIfMissing adds a column to a table unless it is already present.
+func (c *Case) addColumnIfMissing(table, column, decl string) error {
+	rows, err := c.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = c.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl))
+	return err
 }
 
 // seedPalette writes the built-in tag defaults if the palette is empty.
@@ -186,7 +246,7 @@ func (c *Case) seedPalette() error {
 
 // Timelines returns every registered timeline, oldest first.
 func (c *Case) Timelines() ([]TimelineMeta, error) {
-	rows, err := c.db.Query(`SELECT id,name,source_path,delimiter,headers,time_col,added_at
+	rows, err := c.db.Query(`SELECT id,name,source_path,delimiter,headers,display_headers,time_col,added_at
 		FROM timelines ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -195,12 +255,13 @@ func (c *Case) Timelines() ([]TimelineMeta, error) {
 	var out []TimelineMeta
 	for rows.Next() {
 		var t TimelineMeta
-		var headersJSON string
+		var headersJSON, displayJSON string
 		if err := rows.Scan(&t.ID, &t.Name, &t.SourcePath, &t.Delimiter,
-			&headersJSON, &t.TimeCol, &t.AddedAt); err != nil {
+			&headersJSON, &displayJSON, &t.TimeCol, &t.AddedAt); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(headersJSON), &t.Headers)
+		json.Unmarshal([]byte(displayJSON), &t.DisplayHeaders)
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -209,14 +270,15 @@ func (c *Case) Timelines() ([]TimelineMeta, error) {
 // Timeline returns a single timeline by id.
 func (c *Case) Timeline(id int64) (TimelineMeta, error) {
 	var t TimelineMeta
-	var headersJSON string
-	err := c.db.QueryRow(`SELECT id,name,source_path,delimiter,headers,time_col,added_at
+	var headersJSON, displayJSON string
+	err := c.db.QueryRow(`SELECT id,name,source_path,delimiter,headers,display_headers,time_col,added_at
 		FROM timelines WHERE id=?`, id).Scan(&t.ID, &t.Name, &t.SourcePath,
-		&t.Delimiter, &headersJSON, &t.TimeCol, &t.AddedAt)
+		&t.Delimiter, &headersJSON, &displayJSON, &t.TimeCol, &t.AddedAt)
 	if err != nil {
 		return TimelineMeta{}, err
 	}
 	json.Unmarshal([]byte(headersJSON), &t.Headers)
+	json.Unmarshal([]byte(displayJSON), &t.DisplayHeaders)
 	return t, nil
 }
 
@@ -228,9 +290,9 @@ func (c *Case) AddTimeline(name string, idx *model.Index, addedAt string) (Timel
 	headers := idx.Headers()
 	headersJSON, _ := json.Marshal(headers)
 	timeCol := model.DetectTimeColumn(idx)
-	res, err := c.db.Exec(`INSERT INTO timelines(name,source_path,delimiter,headers,time_col,added_at)
-		VALUES(?,?,?,?,?,?)`, name, idx.Path(), string(idx.Delimiter()),
-		string(headersJSON), timeCol, addedAt)
+	res, err := c.db.Exec(`INSERT INTO timelines(name,source_path,delimiter,headers,display_headers,time_col,added_at)
+		VALUES(?,?,?,?,?,?,?)`, name, idx.Path(), string(idx.Delimiter()),
+		string(headersJSON), string(headersJSON), timeCol, addedAt)
 	if err != nil {
 		return TimelineMeta{}, err
 	}
@@ -238,8 +300,20 @@ func (c *Case) AddTimeline(name string, idx *model.Index, addedAt string) (Timel
 	return TimelineMeta{
 		ID: id, Name: name, SourcePath: idx.Path(),
 		Delimiter: string(idx.Delimiter()), Headers: headers,
-		TimeCol: timeCol, AddedAt: addedAt,
+		DisplayHeaders: append([]string(nil), headers...),
+		TimeCol:        timeCol, AddedAt: addedAt,
 	}, nil
+}
+
+// SetColumnNames stores per-column display names for a timeline. names is one
+// entry per source column; a blank entry falls back to the source header.
+func (c *Case) SetColumnNames(id int64, names []string) error {
+	data, err := json.Marshal(names)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.Exec(`UPDATE timelines SET display_headers=? WHERE id=?`, string(data), id)
+	return err
 }
 
 // RemoveTimeline deletes a timeline and all of its annotations.
@@ -442,8 +516,9 @@ func (c *Case) SaveAnnotations(tl TimelineMeta, snap model.SessionSnapshot, rows
 		rec = applyEdits(rec, snap.Edits[row])
 		timeRaw, timeUnix, hasTime := extractTime(rec, tl.TimeCol)
 		summary := summarize(rec)
-		if _, err := tx.Exec(`INSERT INTO tagged_snapshot(timeline_id,row,time_unix,time_raw,summary)
-			VALUES(?,?,?,?,?)`, tl.ID, row, nullableUnix(timeUnix, hasTime), timeRaw, summary); err != nil {
+		cellsJSON, _ := json.Marshal(rec)
+		if _, err := tx.Exec(`INSERT INTO tagged_snapshot(timeline_id,row,time_unix,time_raw,summary,cells)
+			VALUES(?,?,?,?,?,?)`, tl.ID, row, nullableUnix(timeUnix, hasTime), timeRaw, summary, string(cellsJSON)); err != nil {
 			return rollback(err)
 		}
 	}
@@ -467,12 +542,14 @@ func (c *Case) SaveAnnotations(tl TimelineMeta, snap model.SessionSnapshot, rows
 // grouped by timeline then row).
 func (c *Case) Master() ([]MasterEntry, error) {
 	names := map[int64]string{}
+	display := map[int64][]string{}
 	tls, err := c.Timelines()
 	if err != nil {
 		return nil, err
 	}
 	for _, t := range tls {
 		names[t.ID] = t.Name
+		display[t.ID] = t.displayHeadersOrRaw()
 	}
 
 	// Bulk-load tags and comments into maps first. With a single DB connection
@@ -487,7 +564,7 @@ func (c *Case) Master() ([]MasterEntry, error) {
 		return nil, err
 	}
 
-	rows, err := c.db.Query(`SELECT timeline_id,row,time_unix,time_raw,summary FROM tagged_snapshot`)
+	rows, err := c.db.Query(`SELECT timeline_id,row,time_unix,time_raw,summary,cells FROM tagged_snapshot`)
 	if err != nil {
 		return nil, err
 	}
@@ -495,11 +572,14 @@ func (c *Case) Master() ([]MasterEntry, error) {
 	for rows.Next() {
 		var e MasterEntry
 		var tu sql.NullInt64
-		if err := rows.Scan(&e.TimelineID, &e.Row, &tu, &e.TimeRaw, &e.Summary); err != nil {
+		var cellsJSON string
+		if err := rows.Scan(&e.TimelineID, &e.Row, &tu, &e.TimeRaw, &e.Summary, &cellsJSON); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		e.Timeline = names[e.TimelineID]
+		e.DisplayHeaders = display[e.TimelineID]
+		json.Unmarshal([]byte(cellsJSON), &e.Cells)
 		if tu.Valid {
 			e.Time = time.Unix(0, tu.Int64)
 			e.HasTime = true

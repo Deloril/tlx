@@ -81,7 +81,10 @@ func (a *App) clearFilter() {
 	a.colFilter = map[model.ColumnRef]string{}
 	a.view.Apply(model.FilterSpec{})
 	a.clearSelection()
-	a.refreshTable() // repaints headers, clearing the per-column boxes
+	a.refreshTable()
+	if a.filterWinShown { // rebuild the window's condition rows to the empty state
+		a.showFilterWindow()
+	}
 }
 
 // Tagging.
@@ -300,6 +303,7 @@ func (a *App) openFile() {
 			sess.SetMode(a.startMode)
 			a.cse, a.curTimeline, a.masterMode = nil, nil, false
 			a.annotCols = true
+			a.colNames = nil
 			a.reloadWith(idx, sess)
 			a.rebuildCaseMenu()
 		})
@@ -381,6 +385,9 @@ func (a *App) confirmIfDirty(then func()) {
 
 func (a *App) onClose() {
 	a.confirmIfDirty(func() {
+		if a.filterWin != nil {
+			a.filterWin.Close()
+		}
 		if a.idx != nil {
 			a.idx.Close()
 		}
@@ -528,7 +535,7 @@ Modes
   World-write    also edit any cell value
 
 Keyboard
-  /        focus filter        Ctrl+F  focus filter
+  /        open filter window  Ctrl+F  open filter window
   Enter    apply filter        Esc     clear filter
   F3       find next match     Ctrl+G  go to row
   Ctrl+S   save                Ctrl+E  export view
@@ -548,7 +555,12 @@ Editing cells
   or click away commits, Esc cancels.
 
 Filtering
-  The search box takes a query. The simplest is a word, which matches any
+  Filtering lives in a separate window (the Filter button, / or Ctrl+F). It
+  is non-modal: apply a filter, then keep working the grid and refine it as
+  you find things, without closing the window. Drag it to a second monitor
+  if you like. The window has two halves.
+
+  Bottom half: a freetext query. The simplest is a word, which matches any
   column. You can also write field comparisons and combine them:
 
     Summary=derp                 Summary contains "derp"
@@ -564,11 +576,11 @@ Filtering
   Matching is case-insensitive unless "Case sensitive" is ticked. A bad
   query is reported in the status bar and leaves the current view intact.
 
-  Each column header also has a box: type text and press Enter to filter
-  that column to rows containing it. The boxes combine (AND) with each
-  other and with the search query. The Filter button builds richer
-  per-column conditions with multiple values each. The "#" column keeps
-  each row's original CSV line number even after filtering or sorting.
+  Top half: structured per-column conditions, each with multiple values and
+  its own regex/all-values options, combined with AND or OR. The structured
+  conditions and the freetext query combine together. Apply commits both;
+  Enter in the query box does the same. The "#" column keeps each row's
+  original CSV line number even after filtering or sorting.
 
 Cases (File and Case menus)
   A case groups several timelines in one database (.tlxdb), chosen
@@ -580,8 +592,14 @@ Cases (File and Case menus)
   its own timeline. The timestamp column of each timeline is detected
   automatically.
 
+  Case > Rename columns gives the open timeline's columns display names.
+  Columns renamed to the same name across timelines merge into one column
+  in the master view, so timelines with different field names line up. The
+  master view shows those merged columns plus Time, Timeline, Tags and
+  Comment.
+
 Saved views (left sidebar, toggle with Ctrl+L or the Views button)
-  Save current view stores the filter query, per-column boxes, sort and
+  Save current view stores the filter query, column conditions, sort and
   case-sensitivity as a named view. Click a view in the sidebar to apply it;
   the trash icon deletes it. Saved views are application-wide, so they apply
   to any file, timeline or the master view. Columns are matched by name, so a

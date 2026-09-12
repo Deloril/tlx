@@ -19,7 +19,7 @@ func (a *App) registerShortcuts() {
 			})
 	}
 
-	add(fyne.KeyF, fyne.KeyModifierControl, func() { a.win.Canvas().Focus(a.search) })
+	add(fyne.KeyF, fyne.KeyModifierControl, a.focusFilterWindow)
 	add(fyne.KeyG, fyne.KeyModifierControl, a.gotoLine)
 	add(fyne.KeyS, fyne.KeyModifierControl, a.save)
 	add(fyne.KeyE, fyne.KeyModifierControl, a.export)
@@ -34,10 +34,10 @@ func (a *App) registerShortcuts() {
 		}
 		switch ev.Name {
 		case fyne.KeySlash:
-			// vim-style: focus the search box. The guard above means this only
-			// fires when no text field is focused, so typing / into a filter or
-			// cell still works normally.
-			a.win.Canvas().Focus(a.search)
+			// vim-style: open the filter window and focus its query box. The
+			// guard above means this only fires when no text field in the main
+			// window is focused, so typing / into a cell still works normally.
+			a.focusFilterWindow()
 		case fyne.KeyF3:
 			a.findNext()
 		case fyne.KeyEscape:
@@ -48,10 +48,6 @@ func (a *App) registerShortcuts() {
 			a.commentSelected()
 		}
 	})
-}
-
-func (a *App) searchFocused() bool {
-	return a.win.Canvas().Focused() == a.search
 }
 
 // typingFocused reports whether a text field currently has focus, so bare-key
