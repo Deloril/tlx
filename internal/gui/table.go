@@ -124,19 +124,24 @@ func (a *App) newTable() *bigTable {
 	}
 	t.ShowHeaderRow = true
 	// Two-row header: the sort button (column title) on top, the per-column
-	// filter box directly underneath. A plain VBox won't do — Fyne sizes data
-	// rows to max(cell, header) template MinSize, so a two-row-tall header would
-	// double every data row. stackedHeaderLayout reports only the button's height
-	// as its MinSize (keeping data rows a single row tall) but lays both children
-	// out stacked in whatever height the cell is given; we then set the header
-	// row's own height explicitly via SetRowHeight(-1, …) so both rows show.
+	// filter box directly underneath, stacked with a VBox.
+	//
+	// Fyne offers no way to make the header row taller than data rows without
+	// populating the table's rowHeights map (via SetRowHeight(-1, …)). Doing that
+	// flips visibleRowHeights and the content-height calc off their O(1) uniform
+	// fast paths onto loops that walk every row on each layout — death by a
+	// thousand cuts on a multi-million-row file (choppy scroll, runaway memory).
+	// So we keep rowHeights empty and let the header's own MinSize drive the row
+	// height. The cost is that data rows inherit the header's height (Fyne sizes
+	// cells to max(cell, header) template MinSize), so they are a little taller;
+	// that trade keeps scrolling flat on huge timelines.
 	t.CreateHeader = func() fyne.CanvasObject {
 		sort := widget.NewButton("", nil)
 		sort.Alignment = widget.ButtonAlignLeading
 		sort.Importance = widget.LowImportance
 		filter := widget.NewEntry()
 		filter.SetPlaceHolder("filter…")
-		return container.New(stackedHeaderLayout{}, sort, filter)
+		return container.NewVBox(sort, filter)
 	}
 	t.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		a.updateHeader(id, o)
@@ -153,52 +158,10 @@ func (a *App) newTable() *bigTable {
 	}
 	t.onLeave = a.hideTooltip
 	t.onSecondary = a.onTableSecondary
-	// Give the header row enough height to show the title button and the filter
-	// box stacked. stackedHeaderLayout deliberately understates its MinSize so the
-	// data rows stay compact, so the header height has to be set here instead.
-	t.SetRowHeight(-1, stackedHeaderHeight())
 	for i, ci := range a.visible {
 		t.SetColumnWidth(i, a.cols[ci].width)
 	}
 	return t
-}
-
-// stackedHeaderLayout stacks the sort button (top) and the per-column filter
-// entry (below) in a table header cell. Its MinSize reports only the button's
-// height, so widget.Table — which sizes data rows from max(cell, header)
-// template MinSize — keeps data rows a single row tall; the header row is given
-// the extra height for the filter box separately via SetRowHeight(-1, …).
-type stackedHeaderLayout struct{}
-
-func (stackedHeaderLayout) MinSize(objs []fyne.CanvasObject) fyne.Size {
-	if len(objs) < 2 {
-		return fyne.Size{}
-	}
-	b, f := objs[0].MinSize(), objs[1].MinSize()
-	w := b.Width
-	if f.Width > w {
-		w = f.Width
-	}
-	return fyne.NewSize(w, b.Height)
-}
-
-func (stackedHeaderLayout) Layout(objs []fyne.CanvasObject, size fyne.Size) {
-	if len(objs) < 2 {
-		return
-	}
-	sort, filter := objs[0], objs[1]
-	bh := sort.MinSize().Height
-	sort.Resize(fyne.NewSize(size.Width, bh))
-	sort.Move(fyne.NewPos(0, 0))
-	filter.Resize(fyne.NewSize(size.Width, filter.MinSize().Height))
-	filter.Move(fyne.NewPos(0, bh))
-}
-
-// stackedHeaderHeight is the header-row height needed to show the title button
-// and the filter entry stacked, measured from throwaway widgets of the same
-// kind CreateHeader builds.
-func stackedHeaderHeight() float32 {
-	return widget.NewButton("", nil).MinSize().Height + widget.NewEntry().MinSize().Height
 }
 
 func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
