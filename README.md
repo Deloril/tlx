@@ -115,7 +115,7 @@ SDK, so it is not done from this repo's Linux box.
 For a double-clickable `.app` bundle:
 
     go install fyne.io/tools/cmd/fyne@latest
-    fyne package -os darwin --name "Timeline Explorer" --src ./cmd/tlx
+    fyne package -os darwin --name tlx --src ./cmd/tlx
 
 **Linux** — install the dev headers, then `make build`:
 

@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Timeline Explorer</string>
+	<string>tlx</string>
 	<key>CFBundleDisplayName</key>
-	<string>Timeline Explorer</string>
+	<string>tlx</string>
 	<key>CFBundleExecutable</key>
 	<string>tlx</string>
 	<key>CFBundleIconFile</key>
