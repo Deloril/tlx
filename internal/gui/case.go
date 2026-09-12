@@ -40,9 +40,15 @@ func (a *App) buildMainMenu() *fyne.MainMenu {
 // registered timeline, or a hint when no case is open.
 func (a *App) caseMenuItems() []*fyne.MenuItem {
 	if a.cse == nil {
+		var items []*fyne.MenuItem
+		// A standalone timeline is open: offer to seed a new case from it.
+		if a.idx != nil && !a.masterMode {
+			items = append(items, fyne.NewMenuItem("Create case with this timeline…", a.createCaseWithCurrent))
+			items = append(items, fyne.NewMenuItemSeparator())
+		}
 		hint := fyne.NewMenuItem("(open or create a case)", nil)
 		hint.Disabled = true
-		return []*fyne.MenuItem{hint}
+		return append(items, hint)
 	}
 	renameItem := fyne.NewMenuItem("Rename columns…", a.renameColumns)
 	renameItem.Disabled = a.curTimeline == nil || a.masterMode
@@ -123,6 +129,48 @@ func (a *App) newCase() {
 		}
 		a.setCase(cse)
 		a.clearView()
+	})
+}
+
+// createCaseWithCurrent creates a new case, adds the currently open standalone
+// timeline to it, and opens it inside the case. Any tags, comments or edits made
+// in the standalone session are carried across so switching in loses nothing.
+func (a *App) createCaseWithCurrent() {
+	if a.idx == nil || a.cse != nil || a.masterMode {
+		return
+	}
+	src := a.idx.Path()
+	a.showSaveFile("case.tlxdb", func(path string) {
+		if filepath.Ext(path) == "" {
+			path += ".tlxdb"
+		}
+		cse, err := casefile.Create(path)
+		if err != nil {
+			a.showError(err)
+			return
+		}
+		name := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+		tl, err := cse.AddTimeline(name, a.idx, time.Now().Format(time.RFC3339))
+		if err != nil {
+			cse.Close()
+			a.showError(err)
+			return
+		}
+		if err := cse.SaveAnnotations(tl, a.sess.Snapshot(), a.idx); err != nil {
+			cse.Close()
+			a.showError(err)
+			return
+		}
+		// Re-open the source into a fresh index for the case-backed session; the
+		// standalone index is closed by reloadWith inside openTimelineWithIndex.
+		idx, err := model.Open(src, nil)
+		if err != nil {
+			cse.Close()
+			a.showError(err)
+			return
+		}
+		a.setCase(cse)
+		a.openTimelineWithIndex(tl, idx)
 	})
 }
 
