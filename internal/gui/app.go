@@ -155,7 +155,9 @@ func New() *App {
 		colFilter:           map[model.ColumnRef]string{},
 	}
 	a.fyne.Settings().SetTheme(newCompactTheme(a.themeVariant))
+	a.fyne.SetIcon(appIcon)
 	a.win = a.fyne.NewWindow("Timeline explorer")
+	a.win.SetIcon(appIcon)
 	a.win.Resize(fyne.NewSize(1280, 760))
 	a.win.SetCloseIntercept(a.onClose)
 	a.win.SetMainMenu(a.buildMainMenu())

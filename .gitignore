@@ -4,6 +4,9 @@
 /*.exe
 /dist/
 
+# Windows resource object, generated during the Windows build from the .ico
+*.syso
+
 # Annotation sidecars written next to opened CSVs
 *.tlx.json
 

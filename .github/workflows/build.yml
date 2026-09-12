@@ -71,6 +71,7 @@ jobs:
           APP="Timeline Explorer.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp packaging/darwin/Info.plist "$APP/Contents/Info.plist"
+          cp packaging/darwin/tlx.icns "$APP/Contents/Resources/tlx.icns"
           cp tlx "$APP/Contents/MacOS/tlx"
           chmod +x "$APP/Contents/MacOS/tlx"
           rm -f tlx
@@ -80,7 +81,11 @@ jobs:
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
         shell: bash
-        run: go build -ldflags "-s -w -H windowsgui" -o "$ASSET" ./cmd/tlx
+        run: |
+          # Embed the .ico into the exe so Explorer and the taskbar show it.
+          go run github.com/akavel/rsrc@latest \
+            -ico packaging/windows/tlx.ico -arch amd64 -o cmd/tlx/rsrc_windows.syso
+          go build -ldflags "-s -w -H windowsgui" -o "$ASSET" ./cmd/tlx
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

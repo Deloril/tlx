@@ -8,6 +8,8 @@
 	<string>Timeline Explorer</string>
 	<key>CFBundleExecutable</key>
 	<string>tlx</string>
+	<key>CFBundleIconFile</key>
+	<string>tlx.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>nz.timeline.explorer</string>
 	<key>CFBundlePackageType</key>
