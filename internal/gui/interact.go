@@ -343,6 +343,14 @@ func (a *App) deleteTag(name string) {
 			return
 		}
 	}
+	// Drop the tag from the tag-filter selection so a deleted tag can't keep
+	// filtering the view to nothing.
+	if a.tagFilter[name] {
+		delete(a.tagFilter, name)
+		if a.view != nil {
+			a.applySearch()
+		}
+	}
 	if a.sidebarVisible && a.selectedMaster() >= 0 {
 		a.showDetail(a.selectedMaster())
 	}

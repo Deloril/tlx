@@ -19,15 +19,50 @@ const (
 	iocTagColor = "#8E24AA"
 )
 
-// showIOCList opens the case's IOC list for editing. Saving stores it on the
-// case and runs it against the open timeline. The list is per case and is also
-// run automatically when a new timeline is imported.
+// iocPrefKey is the preferences key that holds a standalone timeline's IOC list,
+// keyed by file path so each timeline keeps its own list.
+func iocPrefKey(path string) string { return "ioc_list:" + path }
+
+// iocListText returns the active IOC list: the case's list inside a case, or the
+// standalone list for the open file otherwise.
+func (a *App) iocListText() (string, error) {
+	if a.cse != nil {
+		return a.cse.IOCList()
+	}
+	return a.iocList, nil
+}
+
+// setIOCListText stores the IOC list where it belongs: on the case inside a
+// case, or in the per-file preference for a standalone timeline.
+func (a *App) setIOCListText(text string) error {
+	if a.cse != nil {
+		return a.cse.SetIOCList(text)
+	}
+	a.iocList = text
+	if a.idx != nil {
+		a.fyne.Preferences().SetString(iocPrefKey(a.idx.Path()), text)
+	}
+	return nil
+}
+
+// loadStandaloneIOCList restores the open file's saved IOC list from
+// preferences. It is a no-op inside a case (the case keeps its own list).
+func (a *App) loadStandaloneIOCList() {
+	a.iocList = ""
+	if a.cse == nil && a.idx != nil {
+		a.iocList = a.fyne.Preferences().String(iocPrefKey(a.idx.Path()))
+	}
+}
+
+// showIOCList opens the active IOC list for editing. Saving stores it (on the
+// case in a case, or per-file for a standalone timeline) and runs it against the
+// open timeline. In a case the list also runs automatically on each import.
 func (a *App) showIOCList() {
-	if a.cse == nil {
-		a.showError(fmt.Errorf("open or create a case first"))
+	if a.idx == nil || a.masterMode {
+		a.showError(fmt.Errorf("open a timeline first"))
 		return
 	}
-	cur, err := a.cse.IOCList()
+	cur, err := a.iocListText()
 	if err != nil {
 		a.showError(err)
 		return
@@ -50,22 +85,22 @@ func (a *App) showIOCList() {
 		if !ok {
 			return
 		}
-		if err := a.cse.SetIOCList(entry.Text); err != nil {
+		if err := a.setIOCListText(entry.Text); err != nil {
 			a.showError(err)
 			return
 		}
-		if a.curTimeline != nil && !a.masterMode && a.view != nil {
+		if a.view != nil && !a.masterMode {
 			a.runIOCs(false)
 		} else {
-			dialog.ShowInformation("IOC list", "Saved. Open a timeline in the case to run it.", a.win)
+			dialog.ShowInformation("IOC list", "Saved. Open a timeline to run it.", a.win)
 		}
 	}, a.win)
 	d.Resize(a.dialogSize(720, 620))
 	d.Show()
 }
 
-// runIOCs compiles the case's saved IOC list, scans the open timeline over its
-// full row set (ignoring any active filter) and tags every matching row iocTag.
+// runIOCs compiles the active IOC list, scans the open timeline over its full
+// row set (ignoring any active filter) and tags every matching row iocTag.
 // Tagging needs a writable session, so a read-only session is raised to
 // Investigator for the tagging and restored afterwards — the user asked for
 // these tags, so this is an explicit annotation.
@@ -74,13 +109,13 @@ func (a *App) showIOCList() {
 // timeline: it stays silent on a clean result and persists the new tags to the
 // case so they survive without a manual save.
 func (a *App) runIOCs(auto bool) {
-	if a.cse == nil || a.view == nil || a.curTimeline == nil || a.masterMode {
+	if a.view == nil || a.idx == nil || a.masterMode {
 		if !auto {
-			a.showError(fmt.Errorf("open a timeline in the case first"))
+			a.showError(fmt.Errorf("open a timeline first"))
 		}
 		return
 	}
-	text, err := a.cse.IOCList()
+	text, err := a.iocListText()
 	if err != nil {
 		if !auto {
 			a.showError(err)
@@ -89,7 +124,7 @@ func (a *App) runIOCs(auto bool) {
 	}
 	if strings.TrimSpace(text) == "" {
 		if !auto {
-			dialog.ShowInformation("IOCs", "The IOC list is empty. Add indicators from Case ▸ IOC list.", a.win)
+			dialog.ShowInformation("IOCs", "The IOC list is empty. Add indicators from the IOC list dialog.", a.win)
 		}
 		return
 	}
@@ -124,7 +159,7 @@ func (a *App) runIOCs(auto bool) {
 	}
 
 	// On import, persist straight to the case so the tags stick.
-	if auto && tagged > 0 {
+	if auto && tagged > 0 && a.cse != nil && a.curTimeline != nil {
 		if err := a.cse.SaveAnnotations(*a.curTimeline, a.sess.Snapshot(), a.idx); err != nil {
 			a.showError(err)
 		} else {
@@ -147,7 +182,7 @@ func (a *App) runIOCs(auto bool) {
 // rows were tagged, and any lines that failed to compile.
 func (a *App) reportIOCs(set *model.IOCSet, tagged int, auto bool) {
 	var b strings.Builder
-	if auto {
+	if auto && a.curTimeline != nil {
 		fmt.Fprintf(&b, "Imported timeline %q.\n", a.curTimeline.Name)
 	}
 	fmt.Fprintf(&b, "%s ran; %s tagged %s.",

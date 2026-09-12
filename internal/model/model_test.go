@@ -388,6 +388,29 @@ func TestFilterTaggedOnly(t *testing.T) {
 	}
 }
 
+func TestFilterTags(t *testing.T) {
+	idx := openT(t, "a\n1\n2\n3\n4\n")
+	s := NewSession(idx.Path())
+	s.SetMode(Investigator)
+	s.AddTag(0, "bad")
+	s.AddTag(1, "suspicious")
+	s.AddTag(2, "good")
+	v := NewView(idx, s)
+	if err := v.Apply(FilterSpec{Tags: []string{"bad", "suspicious"}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 2 || v.Master(0) != 0 || v.Master(1) != 1 {
+		t.Fatalf("tags filter len=%d masters=%v", v.Len(), []int{v.Master(0), v.Master(1)})
+	}
+	// An empty Tags slice must not filter anything.
+	if err := v.Apply(FilterSpec{Tags: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 4 {
+		t.Fatalf("empty tags filter len=%d, want 4", v.Len())
+	}
+}
+
 func TestExport(t *testing.T) {
 	idx := openT(t, "host,event\nalpha,login\nbravo,logout\n")
 	s := NewSession(idx.Path())

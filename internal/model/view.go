@@ -58,6 +58,7 @@ type FilterSpec struct {
 	Column     ColumnRef // ColAll, ColNone, a data column, or a virtual column
 	TaggedOnly bool      // keep only rows that carry at least one tag
 	Tag        string    // if set, keep only rows carrying this exact tag
+	Tags       []string  // if non-empty, keep rows carrying any of these exact tags (OR)
 
 	// Expr is a boolean query expression (see query.go): field comparisons
 	// joined by AND/OR/NOT with parentheses. Empty means no expression filter.
@@ -75,7 +76,7 @@ type FilterSpec struct {
 // Empty reports whether the spec would keep every row.
 func (f FilterSpec) Empty() bool {
 	return f.Query == "" && f.Expr == "" && !f.TaggedOnly && f.Tag == "" &&
-		len(f.Conds) == 0 && !hasColFilter(f.ColFilters)
+		len(f.Tags) == 0 && len(f.Conds) == 0 && !hasColFilter(f.ColFilters)
 }
 
 func hasColFilter(m map[ColumnRef]string) bool {
@@ -205,6 +206,7 @@ type compiledCond struct {
 type compiledFilter struct {
 	taggedOnly bool
 	tag        string
+	tags       []string // keep rows carrying any of these exact tags (OR)
 	hasQuery   bool
 	query      matcher
 	queryCol   ColumnRef
@@ -229,6 +231,11 @@ func (v *View) refilter() error {
 		tag:        spec.Tag,
 		queryCol:   spec.Column,
 		condsAny:   spec.CondsAny,
+	}
+	for _, t := range spec.Tags {
+		if t != "" {
+			cf.tags = append(cf.tags, t)
+		}
 	}
 	if spec.Query != "" {
 		m, err := compileMatcher(spec.Query, spec.Regexp, spec.Cased)
@@ -297,6 +304,9 @@ func (v *View) keep(row int, rec []string, cf compiledFilter) bool {
 		return false
 	}
 	if cf.tag != "" && !hasTag(v.ov.Tags(row), cf.tag) {
+		return false
+	}
+	if len(cf.tags) > 0 && !hasAnyTag(v.ov.Tags(row), cf.tags) {
 		return false
 	}
 	if cf.hasQuery && cf.queryCol != ColNone {
@@ -464,6 +474,16 @@ func compareCell(a, b string) int {
 func hasTag(tags []string, t string) bool {
 	for _, x := range tags {
 		if x == t {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAnyTag reports whether tags contains any of the wanted tags (OR).
+func hasAnyTag(tags, wanted []string) bool {
+	for _, w := range wanted {
+		if hasTag(tags, w) {
 			return true
 		}
 	}

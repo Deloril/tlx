@@ -56,6 +56,7 @@ func (a *App) applySearch() {
 		Expr:       strings.TrimSpace(a.search.Text),
 		Cased:      a.caseChk.Checked,
 		TaggedOnly: a.taggedChk.Checked,
+		Tags:       a.selectedTagNames(),
 		Conds:      a.conds,
 		CondsAny:   a.condsAny,
 		ColFilters: a.colFilter,
@@ -85,6 +86,7 @@ func (a *App) clearFilter() {
 	a.conds = nil
 	a.condsAny = false
 	a.colFilter = map[model.ColumnRef]string{}
+	a.tagFilter = map[string]bool{}
 	a.hl = nil
 	if a.view == nil { // view torn down (e.g. between cases); nothing to filter
 		return
@@ -716,6 +718,11 @@ Filtering
   Enter in the query box does the same. The "#" column keeps each row's
   original CSV line number even after filtering or sorting.
 
+  Tags drop-down: next to the query checkboxes, the Tags button opens a
+  checklist of every tag. Tick one or more to keep rows carrying any of them;
+  it combines (AND) with the rest of the filter. This is the same as writing
+  tag=x OR tag=y in the query, but without typing.
+
   Per-column boxes: the Filter row button (or Ctrl+Shift+F) reveals a small
   filter box under each header's sort button. Type a substring and press Enter
   to narrow that one column. A lone * keeps only rows where that column is
@@ -748,11 +755,12 @@ Cases (File and Case menus)
   master view shows those merged columns plus Time, Timeline, Tags and
   Comment.
 
-IOC lists (Case menu, per case)
-  Case > IOC list keeps a list of indicators for the case, one per line.
-  Save & run matches them against the open timeline and tags every hit
-  ioc-hit; the list also runs automatically whenever you import a new
-  timeline. Case > Run IOCs re-runs the saved list on the open timeline.
+IOC lists (File menu)
+  File > IOC list keeps a list of indicators, one per line. Save & run
+  matches them against the open timeline and tags every hit ioc-hit;
+  File > Run IOCs re-runs the saved list. For a standalone timeline the
+  list is saved per file; inside a case it is the case's list and also
+  runs automatically whenever you import a new timeline.
 
   Each line is one of a plain string (matched against every column), a regex
   wrapped in /…/, or a filter query. A filter query starts with a backtick and

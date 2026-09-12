@@ -69,6 +69,9 @@ button (or Esc) drops everything at once. "Tagged only" limits the view to
 annotated rows. Whatever the filter matches is highlighted in the grid and in
 the hover tooltip.
 
+The filter window's Tags button opens a checklist of every tag; tick one or
+more to keep rows carrying any of them, without typing `tag=`.
+
 Right-click a cell holding a timestamp for "Filter ±5 min around this time",
 which narrows that column to a 5-minute window either side of the value.
 
@@ -89,9 +92,11 @@ and semicolons.
 
 ## IOC lists
 
-A case keeps a list of indicators, one per line, matched against the open
-timeline and against each new timeline as it is imported. Hits are tagged
-`ioc-hit`. Edit the list from Case > IOC list. A line is a plain string
+A list of indicators, one per line, matched against the open timeline; hits are
+tagged `ioc-hit`. Edit and run it from File > IOC list, or re-run with File >
+Run IOCs. A standalone timeline keeps its own list (saved per file); inside a
+case the list belongs to the case and also runs against each new timeline as it
+is imported. A line is a plain string
 (matched against every column), a `/regex/`, or — with a leading backtick — a
 filter query using the syntax above, e.g.
 `` `Summary=psexec AND Timestamp between 2024 and 2025 ``. Blank lines and lines
@@ -100,6 +105,9 @@ starting with `#` are ignored; matching is case-insensitive.
 ## Running
 
     tlx [-mode ro|investigator|world] <file.csv>
+
+The default mode is investigator, so tags and comments work straight away; pass
+`-mode ro` for a read-only session.
 
 ## Building
 

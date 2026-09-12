@@ -121,6 +121,16 @@ type App struct {
 	// by the boxes under each column header and by saved views' col_filters.
 	colFilter map[model.ColumnRef]string
 
+	// tagFilter is the set of tag names ticked in the Tags dropdown (filter
+	// window). A row is kept if it carries any of them (OR). Empty means the tag
+	// dropdown imposes no filter.
+	tagFilter map[string]bool
+
+	// iocList holds the IOC list for a standalone (non-case) timeline. Inside a
+	// case the list lives on the case instead. Loaded from and saved to a
+	// per-file preference (see ioc.go).
+	iocList string
+
 	// showFilters toggles the per-column filter boxes under the headers. Off by
 	// default: headers are a single row and data rows stay compact. On: each
 	// header grows a filter box beneath its title, which makes data rows taller
@@ -161,8 +171,9 @@ func New() *App {
 		sidebarVisible:      false, // detail pane starts collapsed; Ctrl+B reveals it
 		viewsSidebarVisible: false, // saved-views pane starts collapsed; Ctrl+L reveals it
 		themeVariant:        theme.VariantDark,
-		startMode:           model.ReadOnly,
+		startMode:           model.Investigator,
 		colFilter:           map[model.ColumnRef]string{},
+		tagFilter:           map[string]bool{},
 	}
 	a.fyne.Settings().SetTheme(newCompactTheme(a.themeVariant))
 	a.fyne.SetIcon(appIcon)
@@ -315,6 +326,7 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
 	a.win.SetTitle(a.windowTitle())
+	a.loadStandaloneIOCList()
 	a.buildColumns()
 	a.buildUI()
 	a.modeSelect.SetSelected(a.sess.Mode().String())
@@ -328,6 +340,7 @@ func (a *App) resetFilterState() {
 	a.conds = nil
 	a.condsAny = false
 	a.colFilter = map[model.ColumnRef]string{}
+	a.tagFilter = map[string]bool{}
 	a.hl = nil
 	if a.search != nil {
 		a.search.SetText("")

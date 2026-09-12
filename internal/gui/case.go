@@ -27,6 +27,9 @@ func (a *App) buildMainMenu() *fyne.MainMenu {
 		fyne.NewMenuItem("New case…", a.newCase),
 		fyne.NewMenuItem("Open case…", a.openCase),
 		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("IOC list…", a.showIOCList),
+		fyne.NewMenuItem("Run IOCs on this timeline", func() { a.runIOCs(false) }),
+		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Save", a.save),
 		fyne.NewMenuItem("Export view…", a.export),
 	)
@@ -54,15 +57,12 @@ func (a *App) caseMenuItems() []*fyne.MenuItem {
 	}
 	renameItem := fyne.NewMenuItem("Rename columns…", a.renameColumns)
 	renameItem.Disabled = a.curTimeline == nil || a.masterMode
-	runIOCItem := fyne.NewMenuItem("Run IOCs on this timeline", func() { a.runIOCs(false) })
-	runIOCItem.Disabled = a.curTimeline == nil || a.masterMode
+	// IOC list / Run IOCs live in the File menu now that they work on standalone
+	// timelines too.
 	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("★ Master timeline", a.showMasterTimeline),
 		fyne.NewMenuItem("Add timeline…", a.addTimelineToCase),
 		renameItem,
-		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("IOC list…", a.showIOCList),
-		runIOCItem,
 		fyne.NewMenuItemSeparator(),
 	}
 	tls, err := a.cse.Timelines()

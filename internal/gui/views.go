@@ -48,6 +48,8 @@ type viewPreset struct {
 	// ColFilters are the per-column header boxes, keyed by column title so they
 	// carry across timelines with the same fields.
 	ColFilters map[string]string `json:"col_filters,omitempty"`
+	// TagFilter is the set of tag names ticked in the Tags drop-down.
+	TagFilter []string `json:"tag_filter,omitempty"`
 }
 
 const anyColumnTitle = "Any column"
@@ -173,6 +175,7 @@ func (a *App) captureView(name string) viewPreset {
 	for _, sk := range a.sortState {
 		p.Sort = append(p.Sort, sortPreset{ColumnTitle: a.colTitle(sk.Col), Desc: sk.Desc})
 	}
+	p.TagFilter = a.selectedTagNames()
 	for ref, val := range a.colFilter {
 		if val == "" {
 			continue
@@ -244,6 +247,10 @@ func (a *App) applyView(p viewPreset) {
 			continue
 		}
 		a.colFilter[a.refForTitle(title)] = val
+	}
+	a.tagFilter = map[string]bool{}
+	for _, name := range p.TagFilter {
+		a.tagFilter[name] = true
 	}
 	// Set the persistent widgets with callbacks suppressed, so the checkbox
 	// OnChanged doesn't run commitFilter and overwrite the conditions we just

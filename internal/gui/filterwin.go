@@ -105,7 +105,7 @@ func (a *App) buildFilterContent() fyne.CanvasObject {
 	bottom := container.NewVBox(
 		widget.NewLabelWithStyle("Query", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		a.search,
-		container.NewHBox(a.caseChk, a.taggedChk),
+		container.NewHBox(a.caseChk, a.taggedChk, a.tagFilterButton()),
 		container.NewHBox(applyBtn, clearBtn),
 	)
 

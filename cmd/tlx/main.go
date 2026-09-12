@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "ro", "initial mode: ro | investigator | world")
+	mode := flag.String("mode", "investigator", "initial mode: ro | investigator | world")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: tlx [-mode ro|investigator|world] [file.csv]")
 		fmt.Fprintln(os.Stderr, "with no file, the window opens with an Open button.")
@@ -24,10 +24,10 @@ func main() {
 		os.Exit(2)
 	}
 
-	startMode := model.ReadOnly
+	startMode := model.Investigator
 	switch *mode {
-	case "investigator":
-		startMode = model.Investigator
+	case "ro":
+		startMode = model.ReadOnly
 	case "world":
 		startMode = model.WorldWrite
 	}
