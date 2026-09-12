@@ -50,7 +50,7 @@ func (v *View) BuildHighlighter(spec FilterSpec) *Highlighter {
 		if val == "" {
 			continue
 		}
-		if m, err := compileMatcher(val, false, spec.Cased); err == nil {
+		if m, err := colFilterMatcher(val, spec.Cased); err == nil {
 			h.terms = append(h.terms, hlTerm{ref: ref, m: m})
 		}
 	}

@@ -222,6 +222,34 @@ func TestColFilters(t *testing.T) {
 	}
 }
 
+func TestColFilterNonEmpty(t *testing.T) {
+	v := queryView(t,
+		[]string{"Host", "Note"},
+		[][]string{
+			{"ws1", "hello"},
+			{"ws2", ""},
+			{"ws3", "  "}, // whitespace-only counts as empty
+			{"ws4", "world"},
+		}, testOverlay{})
+	got := visible(t, v, FilterSpec{ColFilters: map[ColumnRef]string{1: "*"}})
+	if !eq(got, []int{0, 3}) {
+		t.Errorf("* non-empty filter -> %v, want [0 3]", got)
+	}
+}
+
+func TestQueryTimeQuotedField(t *testing.T) {
+	v := queryView(t,
+		[]string{"Event Time", "Summary"},
+		[][]string{
+			{"2020-06-01 10:00:00", "mid"},
+			{"2021-06-01 10:00:00", "new"},
+		}, testOverlay{})
+	got := visible(t, v, FilterSpec{Expr: `"Event Time" between 2020 and 2020`})
+	if !eq(got, []int{0}) {
+		t.Errorf("quoted-field time query -> %v, want [0]", got)
+	}
+}
+
 // timeView builds a view with a Timestamp column and four rows spanning three
 // years plus one unparseable cell.
 func timeView(t *testing.T) *View {

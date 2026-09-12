@@ -295,6 +295,34 @@ func TestCustomTagColorPersists(t *testing.T) {
 	}
 }
 
+func TestDeleteTag(t *testing.T) {
+	s := NewSession("x.csv")
+	s.SetMode(Investigator)
+	s.AddTag(0, "beacon")
+	s.AddTag(0, "Bad")
+	s.AddTag(1, "beacon")
+
+	if err := s.DeleteTag("beacon"); err != nil {
+		t.Fatalf("DeleteTag: %v", err)
+	}
+	// Gone from the palette lookup.
+	if _, ok := s.TagColor("beacon"); ok {
+		t.Error("beacon still in palette after delete")
+	}
+	// Gone from every row; the other tag stays.
+	if tags := s.Tags(0); len(tags) != 1 || tags[0] != "Bad" {
+		t.Errorf("row 0 tags = %v, want [Bad]", tags)
+	}
+	if tags := s.Tags(1); len(tags) != 0 {
+		t.Errorf("row 1 tags = %v, want []", tags)
+	}
+	// Read-only sessions must refuse it, like other annotation edits.
+	s.SetMode(ReadOnly)
+	if err := s.DeleteTag("Bad"); err != ErrReadOnly {
+		t.Errorf("DeleteTag in RO = %v, want ErrReadOnly", err)
+	}
+}
+
 func TestColumnCondFilter(t *testing.T) {
 	idx := openT(t, "host,event\nalpha,login\nbravo,logout\nalpha,logout\ncharlie,login\n")
 	v := NewView(idx, NewSession(idx.Path()))

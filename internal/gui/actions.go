@@ -645,20 +645,25 @@ Keyboard
   Ctrl+S   save                Ctrl+E  export view
   Ctrl+B   toggle detail pane  Ctrl+L  toggle views sidebar
   t        tag selected row    c       comment row
-  Click a header to sort; click again to reverse. Type in the box beside
-  a header to filter that column, then press Enter to apply.
+  Click a header to sort; click again to reverse. Type in the box under
+  a header to filter that column, then press Enter to apply. The Clear
+  filters button (toolbar) drops every filter at once, same as Esc.
 
 Selecting rows
   Click        select one row
   Shift+click  select every row between the last click and this one
   Ctrl/Cmd+click  add or remove one row from the selection
-  Right-click  menu to tag or comment every selected row at once
+  Right-click  menu to tag or comment every selected row at once.
+               Right-click a timestamp cell for "Filter ±5 min around
+               this time", which narrows to that column within 5 minutes.
 
 Tags and colours
   Rows are highlighted by their tag's colour; Bad is red, Suspicious
   yellow, Good green. The highest-priority tag on a row wins. Add your
   own tags with a chosen colour in the Tag dialog. Click a row's Tags
-  cell to pick tags from a drop-down.
+  cell to pick tags from a drop-down; the trash icon beside a tag there
+  deletes it from the palette and strips it from every row (across every
+  timeline, in a case).
 
 Editing cells
   Click an editable cell to type into it directly. In Investigator mode
@@ -709,10 +714,11 @@ Filtering
   Enter in the query box does the same. The "#" column keeps each row's
   original CSV line number even after filtering or sorting.
 
-  Per-column boxes: each header has a small filter box beside its sort
-  button. Type a substring and press Enter to narrow that one column. These
-  boxes combine (AND) with the query and structured conditions, and matches
-  are highlighted in the grid.
+  Per-column boxes: each header has a small filter box under its sort
+  button. Type a substring and press Enter to narrow that one column. A lone
+  * keeps only rows where that column is non-empty. These boxes combine (AND)
+  with the query and structured conditions, and matches are highlighted in
+  the grid.
 
 Existing tag/comment columns
   If a timeline already has a Tags column (Tag/Tags) or a comment column
@@ -722,9 +728,11 @@ Existing tag/comment columns
   to them on save. Tag cells split on commas and semicolons.
 
 Cases (File and Case menus)
-  A case groups several timelines in one database (.tlxdb), chosen
-  when you create it. Add a CSV with Case > Add timeline; open any
-  timeline from the Case menu. Inside a case, Save writes your
+  A case groups several timelines in one database (.tlxdb). Creating a
+  case makes a folder to hold the database and its timelines. Add a CSV
+  with Case > Add timeline and it is copied into the case folder (unless
+  it already lives there); open any timeline from the Case menu. Inside a
+  case, Save writes your
   tags, comments and edits back to the case database, not to a CSV.
   Case > Master timeline shows every tagged row from all timelines in
   one time-sorted view; click a row's "Open in…" button to jump to it in

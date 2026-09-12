@@ -230,6 +230,52 @@ func (s *Session) RemoveTag(row int, tag string) error {
 	return nil
 }
 
+// DeleteTag removes a tag from the palette and strips it from every row that
+// carries it. Like other annotation changes it needs a writable mode. A tag
+// that is not in the palette is a no-op.
+func (s *Session) DeleteTag(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mode == ReadOnly {
+		return ErrReadOnly
+	}
+	if _, ok := s.tagIndex[name]; !ok {
+		return nil
+	}
+	// Drop it from the palette and rebuild the name→index lookup.
+	defs := s.tagDefs[:0]
+	for _, d := range s.tagDefs {
+		if d.Name != name {
+			defs = append(defs, d)
+		}
+	}
+	s.tagDefs = defs
+	s.tagIndex = make(map[string]int, len(s.tagDefs))
+	for i, d := range s.tagDefs {
+		s.tagIndex[d.Name] = i
+	}
+	// Strip it from every tagged row.
+	for row, tags := range s.tags {
+		out := tags[:0]
+		for _, t := range tags {
+			if t != name {
+				out = append(out, t)
+			}
+		}
+		if len(out) == 0 {
+			delete(s.tags, row)
+		} else {
+			s.tags[row] = out
+		}
+	}
+	s.dirty = true
+	return nil
+}
+
 // SetComment sets a row's comment. Allowed in Investigator and World-write.
 func (s *Session) SetComment(row int, text string) error {
 	s.mu.Lock()

@@ -145,11 +145,22 @@ func (v *View) Sort(keys []SortKey) error {
 	return v.resort()
 }
 
-// matcher is one compiled value test: a regexp, or a substring needle.
+// matcher is one compiled value test: a regexp, a substring needle, or the
+// "non-empty" test used by a lone "*" column filter.
 type matcher struct {
-	re     *regexp.Regexp
-	needle string // lowercased when !cased
-	cased  bool
+	re       *regexp.Regexp
+	needle   string // lowercased when !cased
+	cased    bool
+	nonEmpty bool // match any non-blank cell (the "*" column filter)
+}
+
+// colFilterMatcher compiles a per-column quick-filter value. A lone "*" is a
+// special token meaning "this column is non-empty", not a literal asterisk.
+func colFilterMatcher(value string, cased bool) (matcher, error) {
+	if value == "*" {
+		return matcher{nonEmpty: true}, nil
+	}
+	return compileMatcher(value, false, cased)
 }
 
 func compileMatcher(value string, useRegexp, cased bool) (matcher, error) {
@@ -171,6 +182,9 @@ func compileMatcher(value string, useRegexp, cased bool) (matcher, error) {
 }
 
 func (m matcher) match(s string) bool {
+	if m.nonEmpty {
+		return strings.TrimSpace(s) != ""
+	}
 	if m.re != nil {
 		return m.re.MatchString(s)
 	}
@@ -257,7 +271,7 @@ func (v *View) refilter() error {
 		if val == "" {
 			continue
 		}
-		m, err := compileMatcher(val, false, spec.Cased)
+		m, err := colFilterMatcher(val, spec.Cased)
 		if err != nil {
 			return err
 		}

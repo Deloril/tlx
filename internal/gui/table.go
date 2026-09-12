@@ -145,6 +145,7 @@ func (a *App) newTable() *bigTable {
 	// the pointer is over so a right-click can act on it.
 	t.OnHighlighted = func(id widget.TableCellID) {
 		a.hoverRow = id.Row
+		a.hoverCol = id.Col
 		a.hoverCell(id, t.lastPos)
 	}
 	t.onLeave = a.hideTooltip

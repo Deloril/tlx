@@ -5,10 +5,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -188,8 +190,55 @@ func (a *App) showSelectionMenu(pos fyne.Position) {
 		a.clearSelection()
 		a.refreshTable()
 	})
-	menu := fyne.NewMenu("", tag, comment, fyne.NewMenuItemSeparator(), clear)
-	widget.NewPopUpMenu(menu, a.win.Canvas()).ShowAtPosition(pos)
+	items := []*fyne.MenuItem{tag, comment}
+	if ts := a.timeWindowMenuItem(); ts != nil {
+		items = append(items, fyne.NewMenuItemSeparator(), ts)
+	}
+	items = append(items, fyne.NewMenuItemSeparator(), clear)
+	widget.NewPopUpMenu(fyne.NewMenu("", items...), a.win.Canvas()).ShowAtPosition(pos)
+}
+
+// timeWindowMenuItem offers a ±5-minute filter around the right-clicked cell,
+// but only when that cell holds a parseable timestamp. Returns nil otherwise.
+func (a *App) timeWindowMenuItem() *fyne.MenuItem {
+	row, col := a.hoverRow, a.hoverCol
+	if a.view == nil || row < 0 || row >= a.view.Len() || col < 0 || col >= len(a.visible) {
+		return nil
+	}
+	ref := a.cols[a.visible[col]].ref
+	if ref < 0 { // virtual columns (#, Tags, Comment) hold no timestamp
+		return nil
+	}
+	headers := a.idx.Headers()
+	if int(ref) >= len(headers) {
+		return nil
+	}
+	t, ok := model.ParseTime(a.valueOf(a.view.Master(row), ref))
+	if !ok {
+		return nil
+	}
+	field := headers[int(ref)] // query resolves fields against source headers, not display names
+	return fyne.NewMenuItem("Filter ±5 min around this time", func() {
+		a.applyTimeWindow(field, t, 5*time.Minute)
+	})
+}
+
+// applyTimeWindow replaces the query with one keeping rows whose column falls in
+// [t-d, t+d], then applies it. The field is quoted so a header with spaces still
+// parses, and operands are RFC3339 so any timezone offset is preserved.
+func (a *App) applyTimeWindow(field string, t time.Time, d time.Duration) {
+	expr := fmt.Sprintf("%s between %s and %s",
+		quoteQueryField(field), t.Add(-d).Format(time.RFC3339), t.Add(d).Format(time.RFC3339))
+	a.suppressFilter = true
+	a.search.SetText(expr)
+	a.suppressFilter = false
+	a.applySearch()
+}
+
+// quoteQueryField wraps a field name in double quotes for the query language,
+// escaping backslashes and quotes the way readAtom unwraps them.
+func quoteQueryField(s string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
 }
 
 // plural renders "1 row" / "3 rows".
@@ -232,7 +281,14 @@ func (a *App) editTagsPopup(master int) {
 			a.refreshTable()
 		})
 		chk.SetChecked(has[d.Name])
-		box.Add(container.NewHBox(colorSquare(d.Color), chk))
+		del := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
+			if pop != nil {
+				pop.Hide()
+			}
+			a.confirmDeleteTag(d.Name)
+		})
+		del.Importance = widget.LowImportance
+		box.Add(container.NewBorder(nil, nil, container.NewHBox(colorSquare(d.Color), chk), del))
 	}
 
 	box.Add(widget.NewSeparator())
@@ -257,6 +313,40 @@ func (a *App) editTagsPopup(master int) {
 	pop = widget.NewPopUp(container.NewVScroll(box), a.win.Canvas())
 	pop.Resize(fyne.NewSize(260, h))
 	pop.ShowAtPosition(a.table.lastPos)
+}
+
+// confirmDeleteTag asks before removing a tag everywhere it is used.
+func (a *App) confirmDeleteTag(name string) {
+	dialog.NewConfirm("Delete tag",
+		fmt.Sprintf("Delete the tag %q and remove it from every row?", name),
+		func(ok bool) {
+			if ok {
+				a.deleteTag(name)
+			}
+		}, a.win).Show()
+}
+
+// deleteTag removes a tag from the session palette and every row it is on. In a
+// case it also removes the tag from every timeline in the case database, so it
+// is gone from the master view too.
+func (a *App) deleteTag(name string) {
+	if a.sess == nil {
+		return
+	}
+	if err := a.sess.DeleteTag(name); err != nil {
+		a.showError(err)
+		return
+	}
+	if a.cse != nil {
+		if err := a.cse.DeleteTag(name); err != nil {
+			a.showError(err)
+			return
+		}
+	}
+	if a.sidebarVisible && a.selectedMaster() >= 0 {
+		a.showDetail(a.selectedMaster())
+	}
+	a.refreshTable()
 }
 
 func (a *App) startInlineEdit(row, col int) {

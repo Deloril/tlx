@@ -106,6 +106,7 @@ type App struct {
 	selected   map[int]bool
 	anchorView int
 	hoverRow   int
+	hoverCol   int // column last under the pointer, for column-aware context actions
 
 	sidebarVisible      bool // right detail pane
 	viewsSidebarVisible bool // left saved-views pane
@@ -148,6 +149,7 @@ func New() *App {
 		selected:            map[int]bool{},
 		anchorView:          -1,
 		hoverRow:            -1,
+		hoverCol:            -1,
 		sidebarVisible:      false, // detail pane starts collapsed; Ctrl+B reveals it
 		viewsSidebarVisible: false, // saved-views pane starts collapsed; Ctrl+L reveals it
 		themeVariant:        theme.VariantDark,
@@ -301,7 +303,7 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	a.sortState = nil
 	a.selRow, a.selCol = -1, -1
 	a.selected = map[int]bool{}
-	a.anchorView, a.hoverRow = -1, -1
+	a.anchorView, a.hoverRow, a.hoverCol = -1, -1, -1
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
 	a.win.SetTitle(a.windowTitle())
@@ -365,6 +367,7 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 	commentBtn := widget.NewButtonWithIcon("Comment", theme.MailComposeIcon(), a.commentSelected)
 	viewsBtn := widget.NewButtonWithIcon("Views", theme.ListIcon(), a.toggleViewsSidebar)
 	filterBtn := widget.NewButtonWithIcon("Filter", theme.SearchIcon(), a.toggleFilterWindow)
+	clearBtn := widget.NewButtonWithIcon("Clear filters", theme.ContentClearIcon(), a.clearFilter)
 	colsBtn := widget.NewButtonWithIcon("Columns", theme.ViewFullScreenIcon(), a.columnPicker)
 	sidebarBtn := widget.NewButtonWithIcon("Sidebar", theme.MenuIcon(), a.toggleSidebar)
 	a.themeBtn = widget.NewButtonWithIcon("", theme.ColorPaletteIcon(), a.toggleTheme)
@@ -373,7 +376,7 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 
 	left := container.NewHBox(viewsBtn, openBtn, saveBtn, exportBtn, widget.NewSeparator(),
 		widget.NewLabel("Mode:"), a.modeSelect, widget.NewSeparator(),
-		tagBtn, commentBtn, widget.NewSeparator(), filterBtn)
+		tagBtn, commentBtn, widget.NewSeparator(), filterBtn, clearBtn)
 	right := container.NewHBox(sidebarBtn, a.themeBtn, colsBtn, helpBtn)
 	return container.NewBorder(nil, nil, left, right, nil)
 }

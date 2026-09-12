@@ -68,7 +68,7 @@ jobs:
           rm -f tlx-arm64 tlx-amd64
           file tlx
 
-          APP="Timeline Explorer.app"
+          APP="tlx.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp packaging/darwin/Info.plist "$APP/Contents/Info.plist"
           cp packaging/darwin/tlx.icns "$APP/Contents/Resources/tlx.icns"

@@ -209,7 +209,8 @@ func lexQuery(s string) ([]qtoken, error) {
 		}
 
 		// A field followed by a timestamp keyword: FIELD before|after|between …
-		if kind == atomBare {
+		// The field may be a bareword or a "quoted name" (headers with spaces).
+		if kind == atomBare || kind == atomQuoted {
 			j := skipSpaces(s, i)
 			kw, kwkind, kwnext, _ := readAtom(s, j)
 			if kwkind == atomBare {

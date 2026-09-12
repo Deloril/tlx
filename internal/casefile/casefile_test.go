@@ -105,6 +105,60 @@ func TestAnnotationRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDeleteTagCaseWide(t *testing.T) {
+	c := newCase(t)
+	idxA := memIndex([]string{"Timestamp", "Msg"}, [][]string{
+		{"2026-09-01T08:12:03Z", "logon"},  // row 0: beacon only
+		{"2026-09-01T09:00:00Z", "second"}, // row 1: beacon + Bad
+	})
+	idxB := memIndex([]string{"When", "Msg"}, [][]string{
+		{"2026-09-01T10:00:00Z", "outbound"}, // row 0: beacon
+	})
+	tlA, _ := c.AddTimeline("A", idxA, "2026-09-11T00:00:00Z")
+	tlB, _ := c.AddTimeline("B", idxB, "2026-09-11T00:00:00Z")
+	if err := c.SaveAnnotations(tlA, model.SessionSnapshot{
+		Tags:    map[int][]string{0: {"beacon"}, 1: {"beacon", "Bad"}},
+		TagDefs: []model.TagDef{{Name: "beacon", Color: "#1E88E5"}, {Name: "Bad", Color: "#E53935"}},
+	}, idxA); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SaveAnnotations(tlB, model.SessionSnapshot{
+		Tags: map[int][]string{0: {"beacon"}},
+	}, idxB); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.DeleteTag("beacon"); err != nil {
+		t.Fatalf("DeleteTag: %v", err)
+	}
+
+	// Gone from both timelines' rows; Bad stays on A row 1.
+	gotA, _ := c.LoadAnnotations(tlA.ID)
+	if len(gotA.Tags[0]) != 0 {
+		t.Errorf("A row 0 tags = %v, want []", gotA.Tags[0])
+	}
+	if len(gotA.Tags[1]) != 1 || gotA.Tags[1][0] != "Bad" {
+		t.Errorf("A row 1 tags = %v, want [Bad]", gotA.Tags[1])
+	}
+	gotB, _ := c.LoadAnnotations(tlB.ID)
+	if len(gotB.Tags[0]) != 0 {
+		t.Errorf("B row 0 tags = %v, want []", gotB.Tags[0])
+	}
+	// Gone from the palette.
+	defs, _ := c.TagDefs()
+	if _, ok := colorOf(defs, "beacon"); ok {
+		t.Errorf("beacon still in palette: %+v", defs)
+	}
+	// Master: only A row 1 (still tagged Bad) survives; the beacon-only rows drop.
+	master, err := c.Master()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(master) != 1 || master[0].TimelineID != tlA.ID || master[0].Row != 1 {
+		t.Fatalf("master = %+v, want only A row 1", master)
+	}
+}
+
 func TestMasterOrdering(t *testing.T) {
 	c := newCase(t)
 	idxA := memIndex([]string{"Timestamp", "Msg"}, [][]string{

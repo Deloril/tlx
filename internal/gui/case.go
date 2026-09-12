@@ -2,6 +2,8 @@ package gui
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -103,7 +105,7 @@ func (a *App) clearView() {
 	a.masterEntries = nil
 	a.selRow, a.selCol = -1, -1
 	a.selected = map[int]bool{}
-	a.anchorView, a.hoverRow = -1, -1
+	a.anchorView, a.hoverRow, a.hoverCol = -1, -1, -1
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
 	a.hideFilterWindow() // the filter window acts on a.view, which is now nil
@@ -126,10 +128,12 @@ func (a *App) setCase(cse *casefile.Case) {
 
 func (a *App) newCase() {
 	a.showSaveFile("case.tlxdb", func(path string) {
-		if filepath.Ext(path) == "" {
-			path += ".tlxdb"
+		dbPath, err := caseFolderDB(path)
+		if err != nil {
+			a.showError(err)
+			return
 		}
-		cse, err := casefile.Create(path)
+		cse, err := casefile.Create(dbPath)
 		if err != nil {
 			a.showError(err)
 			return
@@ -137,6 +141,71 @@ func (a *App) newCase() {
 		a.setCase(cse)
 		a.clearView()
 	})
+}
+
+// caseFolderDB turns the path chosen in the save dialog into a path inside a
+// dedicated case folder, creating the folder. Choosing ".../foo.tlxdb" yields
+// ".../foo/foo.tlxdb" so the database and its copied timelines sit together.
+func caseFolderDB(chosen string) (string, error) {
+	base := strings.TrimSuffix(filepath.Base(chosen), filepath.Ext(chosen))
+	if base == "" {
+		base = "case"
+	}
+	folder := filepath.Join(filepath.Dir(chosen), base)
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(folder, base+".tlxdb"), nil
+}
+
+// importIntoCase makes sure src lives in the case's folder, copying it in when
+// it is elsewhere, and returns the path to register. A file already in the
+// folder is used in place; a name clash with a different file gets a suffix.
+func (a *App) importIntoCase(src string) (string, error) {
+	dir := filepath.Dir(a.cse.Path())
+	absDir, _ := filepath.Abs(dir)
+	absSrcDir, _ := filepath.Abs(filepath.Dir(src))
+	if absSrcDir == absDir {
+		return src, nil
+	}
+	dest := uniquePath(filepath.Join(dir, filepath.Base(src)))
+	if err := copyFile(src, dest); err != nil {
+		return "", fmt.Errorf("copy timeline into case: %w", err)
+	}
+	return dest, nil
+}
+
+// uniquePath returns p if it is free, else p with a "-N" suffix before the
+// extension for the first N that does not exist.
+func uniquePath(p string) string {
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return p
+	}
+	ext := filepath.Ext(p)
+	stem := strings.TrimSuffix(p, ext)
+	for i := 1; ; i++ {
+		cand := fmt.Sprintf("%s-%d%s", stem, i, ext)
+		if _, err := os.Stat(cand); os.IsNotExist(err) {
+			return cand
+		}
+	}
+}
+
+func copyFile(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // createCaseWithCurrent creates a new case, adds the currently open standalone
@@ -147,36 +216,42 @@ func (a *App) createCaseWithCurrent() {
 		return
 	}
 	src := a.idx.Path()
+	snap := a.sess.Snapshot() // carry the standalone session's annotations across
 	a.showSaveFile("case.tlxdb", func(path string) {
-		if filepath.Ext(path) == "" {
-			path += ".tlxdb"
-		}
-		cse, err := casefile.Create(path)
+		dbPath, err := caseFolderDB(path)
 		if err != nil {
 			a.showError(err)
 			return
 		}
-		name := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
-		tl, err := cse.AddTimeline(name, a.idx, time.Now().Format(time.RFC3339))
+		cse, err := casefile.Create(dbPath)
 		if err != nil {
-			cse.Close()
 			a.showError(err)
 			return
 		}
-		if err := cse.SaveAnnotations(tl, a.sess.Snapshot(), a.idx); err != nil {
-			cse.Close()
-			a.showError(err)
-			return
-		}
-		// Re-open the source into a fresh index for the case-backed session; the
-		// standalone index is closed by reloadWith inside openTimelineWithIndex.
-		idx, err := model.Open(src, nil)
+		a.setCase(cse) // importIntoCase needs the case's folder
+		dest, err := a.importIntoCase(src)
 		if err != nil {
-			cse.Close()
 			a.showError(err)
 			return
 		}
-		a.setCase(cse)
+		// Index the copy so the timeline registers under its in-folder path.
+		idx, err := model.Open(dest, nil)
+		if err != nil {
+			a.showError(err)
+			return
+		}
+		name := strings.TrimSuffix(filepath.Base(dest), filepath.Ext(dest))
+		tl, err := cse.AddTimeline(name, idx, time.Now().Format(time.RFC3339))
+		if err != nil {
+			idx.Close()
+			a.showError(err)
+			return
+		}
+		if err := cse.SaveAnnotations(tl, snap, idx); err != nil {
+			idx.Close()
+			a.showError(err)
+			return
+		}
 		a.openTimelineWithIndex(tl, idx)
 	})
 }
@@ -205,12 +280,17 @@ func (a *App) addTimelineToCase() {
 	}
 	a.confirmIfDirty(func() {
 		a.showOpenFile(func(path string) {
-			idx, err := model.Open(path, nil)
+			dest, err := a.importIntoCase(path)
 			if err != nil {
 				a.showError(err)
 				return
 			}
-			name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+			idx, err := model.Open(dest, nil)
+			if err != nil {
+				a.showError(err)
+				return
+			}
+			name := strings.TrimSuffix(filepath.Base(dest), filepath.Ext(dest))
 			tl, err := a.cse.AddTimeline(name, idx, time.Now().Format(time.RFC3339))
 			if err != nil {
 				idx.Close()

@@ -381,6 +381,30 @@ func (c *Case) SaveTagDefs(defs []model.TagDef) error {
 	return tx.Commit()
 }
 
+// DeleteTag removes a tag from the case palette and strips it from every row of
+// every timeline. Snapshot rows left with no tags drop out, so they no longer
+// appear in the master view.
+func (c *Case) DeleteTag(name string) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func(e error) error { tx.Rollback(); return e }
+	if _, err := tx.Exec(`DELETE FROM tag_defs WHERE name=?`, name); err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM tags WHERE tag=?`, name); err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM tagged_snapshot
+		WHERE NOT EXISTS (SELECT 1 FROM tags
+			WHERE tags.timeline_id = tagged_snapshot.timeline_id
+			  AND tags.row = tagged_snapshot.row)`); err != nil {
+		return rollback(err)
+	}
+	return tx.Commit()
+}
+
 // LoadAnnotations reads a timeline's annotations into a snapshot. The case
 // palette is included so a session opened from it paints rows consistently.
 func (c *Case) LoadAnnotations(timelineID int64) (model.SessionSnapshot, error) {
