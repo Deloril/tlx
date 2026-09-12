@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // This file implements the text filter query language used by the search box.
@@ -38,6 +39,16 @@ const (
 	opNot
 )
 
+// qtimeop is a timestamp comparison operator on a term.
+type qtimeop int
+
+const (
+	tNone qtimeop = iota
+	tBefore
+	tAfter
+	tBetween
+)
+
 // qnode is a parsed query expression node.
 type qnode struct {
 	op   qop
@@ -49,6 +60,12 @@ type qnode struct {
 	neg      bool // the != operator
 	value    string
 	regex    bool
+
+	// timestamp comparison (timeOp != tNone). timeA is the operand for
+	// before/after and the low bound for between; timeB is the high bound.
+	timeOp qtimeop
+	timeA  string
+	timeB  string
 }
 
 // ParseQuery parses a filter query string into an expression tree. An empty or
@@ -92,6 +109,10 @@ type qtoken struct {
 	neg      bool
 	value    string
 	regex    bool
+
+	timeOp qtimeop
+	timeA  string
+	timeB  string
 }
 
 func (t qtoken) describe() string {
@@ -187,10 +208,93 @@ func lexQuery(s string) ([]qtoken, error) {
 			continue
 		}
 
+		// A field followed by a timestamp keyword: FIELD before|after|between …
+		if kind == atomBare {
+			j := skipSpaces(s, i)
+			kw, kwkind, kwnext, _ := readAtom(s, j)
+			if kwkind == atomBare {
+				switch strings.ToLower(kw) {
+				case "before", "after":
+					opRaw, next := readTimeOperand(s, kwnext)
+					if opRaw == "" {
+						return nil, fmt.Errorf("expected a time after %q", kw)
+					}
+					op := tBefore
+					if strings.EqualFold(kw, "after") {
+						op = tAfter
+					}
+					toks = append(toks, qtoken{kind: tkTerm, field: val, hasField: true, timeOp: op, timeA: opRaw})
+					i = next
+					continue
+				case "between":
+					aRaw, afterAnd, ok := readBetweenLow(s, kwnext)
+					if !ok {
+						return nil, errors.New("'between' needs 'and': FIELD between X and Y")
+					}
+					bRaw, next := readTimeOperand(s, afterAnd)
+					if aRaw == "" || bRaw == "" {
+						return nil, errors.New("'between' needs two times: FIELD between X and Y")
+					}
+					toks = append(toks, qtoken{kind: tkTerm, field: val, hasField: true, timeOp: tBetween, timeA: aRaw, timeB: bRaw})
+					i = next
+					continue
+				}
+			}
+		}
+
 		// Otherwise a bare value term (matches any column).
 		toks = append(toks, qtoken{kind: tkTerm, value: val, regex: kind == atomRegex})
 	}
 	return toks, nil
+}
+
+// readTimeOperand consumes the raw text of a time operand starting at from: it
+// runs to the next boolean keyword (AND/OR/NOT), parenthesis or end of input, so
+// an operand may contain spaces (a "date time" literal) and a " ± <dur>" suffix.
+// It returns the trimmed operand text and the offset just past it.
+func readTimeOperand(s string, from int) (string, int) {
+	start := skipSpaces(s, from)
+	i, last := start, start
+	for {
+		j := skipSpaces(s, i)
+		if j >= len(s) || s[j] == '(' || s[j] == ')' {
+			break
+		}
+		atom, k, next, err := readAtom(s, j)
+		if err != nil || k == atomNone {
+			break
+		}
+		if k == atomBare {
+			switch strings.ToUpper(atom) {
+			case "AND", "OR", "NOT":
+				return strings.TrimSpace(s[start:last]), i
+			}
+		}
+		i, last = next, next
+	}
+	return strings.TrimSpace(s[start:last]), i
+}
+
+// readBetweenLow consumes the low operand of a between up to the 'and' keyword.
+// It returns the operand text, the offset just past 'and', and ok=false if no
+// 'and' separator is found.
+func readBetweenLow(s string, from int) (string, int, bool) {
+	start := skipSpaces(s, from)
+	i, last := start, start
+	for {
+		j := skipSpaces(s, i)
+		if j >= len(s) || s[j] == '(' || s[j] == ')' {
+			return "", i, false
+		}
+		atom, k, next, err := readAtom(s, j)
+		if err != nil || k == atomNone {
+			return "", i, false
+		}
+		if k == atomBare && strings.EqualFold(atom, "and") {
+			return strings.TrimSpace(s[start:last]), next, true
+		}
+		i, last = next, next
+	}
 }
 
 func opStr(neg bool) string {
@@ -336,15 +440,16 @@ func (p *qparser) parseNot() (*qnode, error) {
 
 // compileExpr turns a parsed query tree into a predicate over the view's rows,
 // resolving field names against the current columns and compiling each value's
-// matcher. cased applies to every value in the expression.
-func (v *View) compileExpr(n *qnode, cased bool) (rowPred, error) {
+// matcher. cased applies to every value in the expression; now is the reference
+// time for the now/time keyword and relative arithmetic in time comparisons.
+func (v *View) compileExpr(n *qnode, cased bool, now time.Time) (rowPred, error) {
 	switch n.op {
 	case opAnd:
-		left, err := v.compileExpr(n.kids[0], cased)
+		left, err := v.compileExpr(n.kids[0], cased, now)
 		if err != nil {
 			return nil, err
 		}
-		right, err := v.compileExpr(n.kids[1], cased)
+		right, err := v.compileExpr(n.kids[1], cased, now)
 		if err != nil {
 			return nil, err
 		}
@@ -352,11 +457,11 @@ func (v *View) compileExpr(n *qnode, cased bool) (rowPred, error) {
 			return left(row, rec) && right(row, rec)
 		}, nil
 	case opOr:
-		left, err := v.compileExpr(n.kids[0], cased)
+		left, err := v.compileExpr(n.kids[0], cased, now)
 		if err != nil {
 			return nil, err
 		}
-		right, err := v.compileExpr(n.kids[1], cased)
+		right, err := v.compileExpr(n.kids[1], cased, now)
 		if err != nil {
 			return nil, err
 		}
@@ -364,7 +469,7 @@ func (v *View) compileExpr(n *qnode, cased bool) (rowPred, error) {
 			return left(row, rec) || right(row, rec)
 		}, nil
 	case opNot:
-		child, err := v.compileExpr(n.kids[0], cased)
+		child, err := v.compileExpr(n.kids[0], cased, now)
 		if err != nil {
 			return nil, err
 		}
@@ -372,6 +477,9 @@ func (v *View) compileExpr(n *qnode, cased bool) (rowPred, error) {
 			return !child(row, rec)
 		}, nil
 	default: // opTerm
+		if n.timeOp != tNone {
+			return v.compileTimeTerm(n, now)
+		}
 		ref, err := v.resolveField(n.field, n.hasField)
 		if err != nil {
 			return nil, err
@@ -389,6 +497,44 @@ func (v *View) compileExpr(n *qnode, cased bool) (rowPred, error) {
 			return hit
 		}, nil
 	}
+}
+
+// compileTimeTerm builds a predicate for a before/after/between comparison. The
+// field must name a data column; a row matches only if its cell parses as a
+// timestamp and falls in range. Rows with an unparseable cell never match.
+func (v *View) compileTimeTerm(n *qnode, now time.Time) (rowPred, error) {
+	ref, err := v.resolveField(n.field, n.hasField)
+	if err != nil {
+		return nil, err
+	}
+	if ref < 0 {
+		return nil, fmt.Errorf("time comparison needs a data column, not %q", n.field)
+	}
+	a, ok := parseTimeOperand(n.timeA, now)
+	if !ok {
+		return nil, fmt.Errorf("cannot parse time %q", n.timeA)
+	}
+	if n.timeOp == tBetween {
+		b, ok := parseTimeOperand(n.timeB, now)
+		if !ok {
+			return nil, fmt.Errorf("cannot parse time %q", n.timeB)
+		}
+		return func(row int, rec []string) bool {
+			t, ok := ParseTime(v.cell(row, rec, ref))
+			return ok && !t.Before(a.start) && t.Before(b.end)
+		}, nil
+	}
+	op := n.timeOp
+	return func(row int, rec []string) bool {
+		t, ok := ParseTime(v.cell(row, rec, ref))
+		if !ok {
+			return false
+		}
+		if op == tBefore {
+			return t.Before(a.start)
+		}
+		return !t.Before(a.end) // tAfter: at or past the end of the named period
+	}, nil
 }
 
 // resolveField maps a query field name to a column reference. A term with no
@@ -440,6 +586,7 @@ func (p *qparser) parseAtom() (*qnode, error) {
 		return &qnode{
 			op: opTerm, field: t.field, hasField: t.hasField,
 			neg: t.neg, value: t.value, regex: t.regex,
+			timeOp: t.timeOp, timeA: t.timeA, timeB: t.timeB,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unexpected %s", t.describe())

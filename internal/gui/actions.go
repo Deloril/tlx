@@ -659,6 +659,22 @@ Filtering
   Matching is case-insensitive unless "Case sensitive" is ticked. A bad
   query is reported in the status bar and leaves the current view intact.
 
+  Timestamps. A column can be compared with before, after or between:
+
+    Timestamp before 2020-06-01        rows earlier than that day
+    Timestamp after 2021               rows after all of 2021
+    Timestamp between 2020 and 2021    within 2020 up to the end of 2021
+
+  A bare year, month or day covers the whole period: "2020" is all of 2020,
+  "before 2020" is anything earlier, "after 2020" is 2021 onward. You can
+  shift a time by a duration with + or - (spaces required):
+
+    Timestamp after now - 7d           the last week (now = the current time)
+    Timestamp before 2024-01-01 + 12h
+
+  Durations use s, m, h, d, w (second, minute, hour, day, week) and combine,
+  e.g. 1d12h. now and time both mean the current time.
+
   Top half: structured per-column conditions, each with multiple values and
   its own regex/all-values options, combined with AND or OR. The structured
   conditions and the freetext query combine together. Apply commits both;
@@ -685,6 +701,25 @@ Cases (File and Case menus)
   in the master view, so timelines with different field names line up. The
   master view shows those merged columns plus Time, Timeline, Tags and
   Comment.
+
+IOC lists (Case menu, per case)
+  Case > IOC list keeps a list of indicators for the case, one per line.
+  Save & run matches them against the open timeline and tags every hit
+  ioc-hit; the list also runs automatically whenever you import a new
+  timeline. Case > Run IOCs re-runs the saved list on the open timeline.
+
+  Each line is one of a plain string (matched against every column), a regex
+  wrapped in /…/, or a filter query. A filter query starts with a backtick and
+  then uses the same syntax as the search box, including before/after/between on
+  timestamp columns:
+
+    evil.exe                     plain string, any column
+    /T[0-9]{4}/                  regex
+    Summary=psexec AND Host=dc1  filter query (prefixed with a backtick)
+
+  Blank lines and lines starting with # are ignored. Matching is
+  case-insensitive. Lines that fail to compile are listed after a run; the
+  rest still apply.
 
 Saved views (left sidebar, toggle with Ctrl+L or the Views button)
   Save current view stores the filter query, column conditions, sort and

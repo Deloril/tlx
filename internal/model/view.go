@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ColumnRef addresses a column in the view. Non-negative values are data
@@ -229,7 +230,7 @@ func (v *View) refilter() error {
 			return err
 		}
 		if ast != nil {
-			pred, err := v.compileExpr(ast, spec.Cased)
+			pred, err := v.compileExpr(ast, spec.Cased, time.Now())
 			if err != nil {
 				return err
 			}

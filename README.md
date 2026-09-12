@@ -65,6 +65,22 @@ regular expression. Each column header also has a box that filters just that
 column; press Enter to apply. "Tagged only" limits the view to annotated rows.
 Whatever the filter matches is highlighted in the grid.
 
+Timestamp columns compare with `before`, `after` and `between`, e.g.
+`Timestamp between 2020 and 2021` or `Timestamp after now - 7d`. A bare year,
+month or day covers the whole period, so `after 2020` means 2021 onward. Shift a
+time with `+`/`-` and a duration (`s`, `m`, `h`, `d`, `w`, combining as `1d12h`);
+`now` and `time` are the current time.
+
+## IOC lists
+
+A case keeps a list of indicators, one per line, matched against the open
+timeline and against each new timeline as it is imported. Hits are tagged
+`ioc-hit`. Edit the list from Case > IOC list. A line is a plain string
+(matched against every column), a `/regex/`, or — with a leading backtick — a
+filter query using the syntax above, e.g.
+`` `Summary=psexec AND Timestamp between 2024 and 2025 ``. Blank lines and lines
+starting with `#` are ignored; matching is case-insensitive.
+
 ## Running
 
     tlx [-mode ro|investigator|world] <file.csv>

@@ -52,10 +52,15 @@ func (a *App) caseMenuItems() []*fyne.MenuItem {
 	}
 	renameItem := fyne.NewMenuItem("Rename columns…", a.renameColumns)
 	renameItem.Disabled = a.curTimeline == nil || a.masterMode
+	runIOCItem := fyne.NewMenuItem("Run IOCs on this timeline", func() { a.runIOCs(false) })
+	runIOCItem.Disabled = a.curTimeline == nil || a.masterMode
 	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("★ Master timeline", a.showMasterTimeline),
 		fyne.NewMenuItem("Add timeline…", a.addTimelineToCase),
 		renameItem,
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("IOC list…", a.showIOCList),
+		runIOCItem,
 		fyne.NewMenuItemSeparator(),
 	}
 	tls, err := a.cse.Timelines()
@@ -214,6 +219,8 @@ func (a *App) addTimelineToCase() {
 			}
 			// Open it straight away, reusing the index we just indexed.
 			a.openTimelineWithIndex(tl, idx)
+			// Match the case's IOC list against the new timeline.
+			a.runIOCs(true)
 		})
 	})
 }

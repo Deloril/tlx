@@ -222,6 +222,61 @@ func TestColFilters(t *testing.T) {
 	}
 }
 
+// timeView builds a view with a Timestamp column and four rows spanning three
+// years plus one unparseable cell.
+func timeView(t *testing.T) *View {
+	t.Helper()
+	return queryView(t,
+		[]string{"Timestamp", "Summary"},
+		[][]string{
+			{"2019-06-01 10:00:00", "old"},
+			{"2020-06-01 10:00:00", "mid"},
+			{"2021-06-01 10:00:00", "new"},
+			{"notatime", "bad"},
+		}, testOverlay{})
+}
+
+func TestQueryTimeOperators(t *testing.T) {
+	cases := []struct {
+		q    string
+		want []int
+	}{
+		{"Timestamp before 2020", []int{0}},           // t < 2020-01-01
+		{"Timestamp after 2020", []int{2}},            // t >= 2021-01-01 (past all of 2020)
+		{"Timestamp between 2020 and 2020", []int{1}}, // 2020-01-01 <= t < 2021-01-01
+		{"Timestamp between 2019 and 2021", []int{0, 1, 2}},
+		// Arithmetic: before a shifted instant. 2020-06-01 10:00:00 + 1d is a
+		// one-second instant at 2020-06-02 10:00:00; rows before it are 0 and 1.
+		{"Timestamp before 2020-06-01 10:00:00 + 1d", []int{0, 1}},
+		// The operand reader must stop at the boolean AND.
+		{"Timestamp after 2019 AND Summary=new", []int{2}},
+		// The between reader must stop its high operand at the boolean AND.
+		{"Timestamp between 2019 and 2021 AND Summary=mid", []int{1}},
+	}
+	for _, c := range cases {
+		v := timeView(t)
+		got := visible(t, v, FilterSpec{Expr: c.q})
+		if !eq(got, c.want) {
+			t.Errorf("%q -> %v, want %v", c.q, got, c.want)
+		}
+	}
+}
+
+func TestQueryTimeErrors(t *testing.T) {
+	v := timeView(t)
+	cases := []string{
+		"Timestamp before notaday",   // unparseable operand
+		"Timestamp between 2020",     // missing 'and Y'
+		"Timestamp between 2020 and", // missing high operand
+		"tag before 2020",            // virtual column, not a data column
+	}
+	for _, q := range cases {
+		if err := v.Apply(FilterSpec{Expr: q}); err == nil {
+			t.Errorf("query %q: expected error, got none (kept %d rows)", q, v.Len())
+		}
+	}
+}
+
 func TestQueryErrors(t *testing.T) {
 	v := queryView(t, []string{"S"}, [][]string{{"x"}}, testOverlay{})
 	cases := []string{

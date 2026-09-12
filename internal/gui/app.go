@@ -186,11 +186,15 @@ func (a *App) OpenInitial(idx *model.Index, sess *model.Session) {
 	a.reloadWith(idx, sess)
 }
 
-// showPlaceholder renders the empty state with an Open button.
+// showPlaceholder renders the empty state with buttons to open a standalone
+// timeline, open an existing case, or start a new one.
 func (a *App) showPlaceholder() {
-	open := widget.NewButtonWithIcon("Open CSV…", theme.FolderOpenIcon(), a.openFile)
-	hint := widget.NewLabel("Open a forensic CSV timeline to begin.")
-	a.win.SetContent(container.NewCenter(container.NewVBox(hint, container.NewCenter(open))))
+	openTL := widget.NewButtonWithIcon("Open timeline…", theme.FolderOpenIcon(), a.openFile)
+	openCase := widget.NewButtonWithIcon("Open case…", theme.StorageIcon(), a.openCase)
+	newCase := widget.NewButtonWithIcon("New case…", theme.ContentAddIcon(), a.newCase)
+	hint := widget.NewLabel("Open a forensic CSV timeline, or open or create a case to group several.")
+	buttons := container.NewHBox(openTL, openCase, newCase)
+	a.win.SetContent(container.NewCenter(container.NewVBox(hint, container.NewCenter(buttons))))
 }
 
 func (a *App) buildColumns() {

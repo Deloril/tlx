@@ -537,6 +537,26 @@ func (c *Case) SaveAnnotations(tl TimelineMeta, snap model.SessionSnapshot, rows
 	return tx.Commit()
 }
 
+const iocListKey = "ioc_list"
+
+// IOCList returns the case's saved IOC list (one indicator per line), or "" if
+// none has been set.
+func (c *Case) IOCList() (string, error) {
+	var v string
+	err := c.db.QueryRow(`SELECT value FROM meta WHERE key=?`, iocListKey).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return v, err
+}
+
+// SetIOCList stores the case's IOC list, replacing any prior value.
+func (c *Case) SetIOCList(text string) error {
+	_, err := c.db.Exec(`INSERT INTO meta(key,value) VALUES(?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, iocListKey, text)
+	return err
+}
+
 // Master returns every tagged row across all timelines, sorted chronologically
 // (rows with a parseable timestamp first, ascending; rows without follow,
 // grouped by timeline then row).
