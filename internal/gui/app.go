@@ -90,8 +90,16 @@ type App struct {
 	statusFilter *widget.Label
 	statusDirty  *widget.Label
 
-	selRow int // selected view row, -1 if none
-	selCol int // selected table column, -1 if none
+	selRow int // active view row (drives detail pane and inline edit), -1 if none
+	selCol int // active table column, -1 if none
+
+	// Multi-selection. selected holds the set of selected rows keyed by master
+	// index, so a selection survives sorting and filtering. anchorView is the
+	// view-row index a shift-click ranges from; hoverRow is the row last under the
+	// pointer, used to seat the right-click menu.
+	selected   map[int]bool
+	anchorView int
+	hoverRow   int
 
 	sidebarVisible      bool // right detail pane
 	viewsSidebarVisible bool // left saved-views pane
@@ -129,6 +137,9 @@ func New() *App {
 		fyne:                app.NewWithID("nz.timeline.explorer"),
 		selRow:              -1,
 		selCol:              -1,
+		selected:            map[int]bool{},
+		anchorView:          -1,
+		hoverRow:            -1,
 		sidebarVisible:      false, // detail pane starts collapsed; Ctrl+B reveals it
 		viewsSidebarVisible: false, // saved-views pane starts collapsed; Ctrl+L reveals it
 		themeVariant:        theme.VariantDark,
@@ -263,6 +274,8 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	a.view = model.NewView(idx, sess)
 	a.sortState = nil
 	a.selRow, a.selCol = -1, -1
+	a.selected = map[int]bool{}
+	a.anchorView, a.hoverRow = -1, -1
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
 	a.win.SetTitle(a.windowTitle())

@@ -27,11 +27,17 @@ import (
 // Memory then stays flat (~180 MB) regardless of row count.
 type bigTable struct {
 	widget.Table
-	rowCount func() int // real row count once we are sized
-	cols     func() int // column count
-	onLeave  func()     // called when the pointer leaves the table
-	primed   bool
-	lastPos  fyne.Position
+	rowCount    func() int              // real row count once we are sized
+	cols        func() int              // column count
+	onLeave     func()                  // called when the pointer leaves the table
+	onSecondary func(pos fyne.Position) // called on right-click, with canvas position
+	primed      bool
+	lastPos     fyne.Position
+	// lastMod carries the keyboard modifiers of the most recent mouse press to
+	// the OnSelected callback, which Fyne's PointEvent does not include. It is
+	// consumed (reset to 0) each time a click is handled, so a programmatic
+	// Select is never mistaken for a modifier click.
+	lastMod fyne.KeyModifier
 }
 
 func newBigTable(rowCount, cols func() int) *bigTable {
@@ -70,6 +76,29 @@ func (b *bigTable) MouseOut() {
 	b.Table.MouseOut()
 }
 
+// MouseDown records the press modifiers (Shift/Ctrl/Cmd) so the OnSelected
+// handler that follows the tap can implement range- and toggle-selection. The
+// press is forwarded to the embedded table only if it handles one.
+func (b *bigTable) MouseDown(e *desktop.MouseEvent) {
+	b.lastMod = e.Modifier
+	if m, ok := any(&b.Table).(desktop.Mouseable); ok {
+		m.MouseDown(e)
+	}
+}
+
+func (b *bigTable) MouseUp(e *desktop.MouseEvent) {
+	if m, ok := any(&b.Table).(desktop.Mouseable); ok {
+		m.MouseUp(e)
+	}
+}
+
+// TappedSecondary opens the row context menu at the pointer.
+func (b *bigTable) TappedSecondary(e *fyne.PointEvent) {
+	if b.onSecondary != nil {
+		b.onSecondary(e.AbsolutePosition)
+	}
+}
+
 func (a *App) newTable() *bigTable {
 	t := newBigTable(
 		func() int { return a.view.Len() },
@@ -99,11 +128,14 @@ func (a *App) newTable() *bigTable {
 	t.OnSelected = func(id widget.TableCellID) {
 		a.onCellSelected(id)
 	}
-	// Show the full contents of a truncated cell on hover.
+	// Show the full contents of a truncated cell on hover, and remember which row
+	// the pointer is over so a right-click can act on it.
 	t.OnHighlighted = func(id widget.TableCellID) {
+		a.hoverRow = id.Row
 		a.hoverCell(id, t.lastPos)
 	}
 	t.onLeave = a.hideTooltip
+	t.onSecondary = a.onTableSecondary
 	for i, ci := range a.visible {
 		t.SetColumnWidth(i, a.cols[ci].width)
 	}
@@ -155,8 +187,8 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		if hex, ok := a.sess.RowColor(master); ok {
 			want = rowTintColor(hex)
 		}
-		// Highlight the whole selected row, composited over any tag tint.
-		if id.Row == a.selRow {
+		// Highlight every selected row, composited over any tag tint.
+		if a.selected[master] || id.Row == a.selRow {
 			base, _ := want.(color.NRGBA)
 			want = over(base, selectionTint())
 		}
@@ -243,6 +275,8 @@ func (a *App) clearSelection() {
 		a.table.UnselectAll()
 	}
 	a.selRow, a.selCol = -1, -1
+	a.selected = map[int]bool{}
+	a.anchorView = -1
 	a.cancelInlineEdit()
 }
 

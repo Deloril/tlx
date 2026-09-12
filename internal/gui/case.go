@@ -97,6 +97,8 @@ func (a *App) clearView() {
 	a.masterMode = false
 	a.masterEntries = nil
 	a.selRow, a.selCol = -1, -1
+	a.selected = map[int]bool{}
+	a.anchorView, a.hoverRow = -1, -1
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
 	a.hideFilterWindow() // the filter window acts on a.view, which is now nil

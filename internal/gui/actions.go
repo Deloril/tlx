@@ -103,6 +103,23 @@ func (a *App) tagSelected() {
 		a.showError(fmt.Errorf("select a row first"))
 		return
 	}
+	a.addTagDialog([]int{master})
+}
+
+// bulkTag adds one tag to every selected row.
+func (a *App) bulkTag() {
+	masters := a.selectedMasters()
+	if len(masters) == 0 {
+		a.showError(fmt.Errorf("select one or more rows first"))
+		return
+	}
+	a.addTagDialog(masters)
+}
+
+// addTagDialog shows the tag picker and applies the chosen tag to every master
+// row given. With one row it shows that row's current tags; with several it says
+// how many rows the tag will be added to.
+func (a *App) addTagDialog(masters []int) {
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("tag name, e.g. lateral-movement")
 
@@ -140,9 +157,14 @@ func (a *App) tagSelected() {
 		reuse = chipBox
 	}
 
-	current := widget.NewLabel("Current: " + strings.Join(a.sess.Tags(master), ", "))
+	var header string
+	if len(masters) == 1 {
+		header = "Current: " + strings.Join(a.sess.Tags(masters[0]), ", ")
+	} else {
+		header = fmt.Sprintf("Adding to %s", plural(len(masters), "row"))
+	}
 	body := container.NewVBox(
-		current,
+		widget.NewLabel(header),
 		widget.NewLabel("Tag name:"), entry,
 		widget.NewLabel("Colour (new tags only):"), swBox,
 		widget.NewLabel("Reuse:"), reuse,
@@ -162,11 +184,15 @@ func (a *App) tagSelected() {
 				return
 			}
 		}
-		if err := a.sess.AddTag(master, name); err != nil {
-			a.showError(err)
-			return
+		for _, m := range masters {
+			if err := a.sess.AddTag(m, name); err != nil {
+				a.showError(err)
+				return
+			}
 		}
-		a.showDetail(master)
+		if a.selectedMaster() >= 0 {
+			a.showDetail(a.selectedMaster())
+		}
 		a.refreshTable()
 	}, a.win)
 	d.Resize(a.dialogSize(560, 620))
@@ -191,6 +217,46 @@ func (a *App) commentSelected() {
 			return
 		}
 		a.showDetail(master)
+		a.refreshTable()
+	}, a.win)
+}
+
+// bulkComment sets the same comment on every selected row, replacing whatever
+// each row had.
+func (a *App) bulkComment() {
+	masters := a.selectedMasters()
+	if len(masters) == 0 {
+		a.showError(fmt.Errorf("select one or more rows first"))
+		return
+	}
+	entry := widget.NewMultiLineEntry()
+	entry.SetMinRowsVisible(4)
+	// Seed with the common comment if every selected row already shares one.
+	first := a.sess.Comment(masters[0])
+	same := true
+	for _, m := range masters[1:] {
+		if a.sess.Comment(m) != first {
+			same = false
+			break
+		}
+	}
+	if same {
+		entry.SetText(first)
+	}
+	title := fmt.Sprintf("Comment %s (replaces existing)", plural(len(masters), "row"))
+	dialog.ShowCustomConfirm(title, "Save", "Cancel", entry, func(ok bool) {
+		if !ok {
+			return
+		}
+		for _, m := range masters {
+			if err := a.sess.SetComment(m, entry.Text); err != nil {
+				a.showError(err)
+				return
+			}
+		}
+		if a.selectedMaster() >= 0 {
+			a.showDetail(a.selectedMaster())
+		}
 		a.refreshTable()
 	}, a.win)
 }
@@ -550,6 +616,12 @@ Keyboard
   Ctrl+B   toggle detail pane  Ctrl+L  toggle views sidebar
   t        tag selected row    c       comment row
   Click a header to sort; click again to reverse.
+
+Selecting rows
+  Click        select one row
+  Shift+click  select every row between the last click and this one
+  Ctrl/Cmd+click  add or remove one row from the selection
+  Right-click  menu to tag or comment every selected row at once
 
 Tags and colours
   Rows are highlighted by their tag's colour; Bad is red, Suspicious

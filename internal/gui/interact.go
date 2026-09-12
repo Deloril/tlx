@@ -1,6 +1,8 @@
 package gui
 
 import (
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -64,30 +66,138 @@ func (a *App) cellEditable(ref model.ColumnRef) bool {
 	}
 }
 
-// onCellSelected runs when a grid cell is clicked. It selects (and highlights)
-// the whole row, updates the detail pane, and either drops into inline editing
-// or opens the tag drop-down, depending on the column.
+// onCellSelected runs when a grid cell is clicked. A plain click selects the one
+// row, updates the detail pane, and drops into inline editing or the tag
+// drop-down depending on the column. Shift-click extends a range from the anchor
+// row; Ctrl/Cmd-click toggles the clicked row in or out of the selection. The
+// modifier click is a selection gesture only — it never starts an edit.
 func (a *App) onCellSelected(id widget.TableCellID) {
 	a.selRow, a.selCol = id.Row, id.Col
 	if id.Row < 0 || id.Row >= a.view.Len() || id.Col < 0 || id.Col >= len(a.visible) {
 		return
 	}
+	mod := a.table.lastMod
+	a.table.lastMod = 0 // consume; a later programmatic Select must read as plain
+	toggle := mod&(fyne.KeyModifierControl|fyne.KeyModifierSuper) != 0
+	rangeSel := mod&fyne.KeyModifierShift != 0
+
 	master := a.view.Master(id.Row)
+	switch {
+	case rangeSel && a.anchorView >= 0:
+		a.selectRange(a.anchorView, id.Row)
+	case toggle:
+		if a.selected[master] {
+			delete(a.selected, master)
+		} else {
+			a.selected[master] = true
+		}
+		a.anchorView = id.Row
+	default:
+		a.selected = map[int]bool{master: true}
+		a.anchorView = id.Row
+	}
+
 	if a.sidebarVisible {
 		a.showDetail(master)
 	}
+
 	ref := a.cols[a.visible[id.Col]].ref
-	switch {
-	case ref == model.ColTags && a.sess.Mode() != model.ReadOnly:
+	if toggle || rangeSel {
 		a.cancelInlineEdit()
-		a.editTagsPopup(master)
-	case a.cellEditable(ref):
-		a.startInlineEdit(id.Row, id.Col)
-	default:
-		a.cancelInlineEdit()
+	} else {
+		switch {
+		case ref == model.ColTags && a.sess.Mode() != model.ReadOnly:
+			a.cancelInlineEdit()
+			a.editTagsPopup(master)
+		case a.cellEditable(ref):
+			a.startInlineEdit(id.Row, id.Col)
+		default:
+			a.cancelInlineEdit()
+		}
 	}
-	// Repaint so the row-selection highlight follows the click.
+	// Drop the table's own single-cell selection so the next click — even on the
+	// same cell — fires OnSelected again; Fyne's table early-returns when a cell
+	// is re-selected. Our highlight is driven by a.selected, not the table's.
+	a.table.Table.UnselectAll()
 	a.table.Refresh()
+}
+
+// selectRange sets the selection to every row between two view positions
+// (inclusive), keyed by master index so it survives later sorts.
+func (a *App) selectRange(fromView, toView int) {
+	if fromView > toView {
+		fromView, toView = toView, fromView
+	}
+	if fromView < 0 {
+		fromView = 0
+	}
+	if toView >= a.view.Len() {
+		toView = a.view.Len() - 1
+	}
+	a.selected = map[int]bool{}
+	for r := fromView; r <= toView; r++ {
+		a.selected[a.view.Master(r)] = true
+	}
+}
+
+// selectedMasters returns the selected rows as a sorted slice of master indices.
+func (a *App) selectedMasters() []int {
+	out := make([]int, 0, len(a.selected))
+	for m := range a.selected {
+		out = append(out, m)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// onTableSecondary opens the row context menu at a right-click. If the clicked
+// row is not already part of the selection, it becomes the sole selection first,
+// so a plain right-click acts on the row under the pointer.
+func (a *App) onTableSecondary(pos fyne.Position) {
+	if a.view == nil || a.view.Len() == 0 {
+		return
+	}
+	if a.hoverRow >= 0 && a.hoverRow < a.view.Len() {
+		m := a.view.Master(a.hoverRow)
+		if !a.selected[m] {
+			a.selected = map[int]bool{m: true}
+			a.selRow, a.selCol = a.hoverRow, 0
+			a.anchorView = a.hoverRow
+			if a.sidebarVisible {
+				a.showDetail(m)
+			}
+			a.table.Refresh()
+		}
+	}
+	if len(a.selected) == 0 {
+		return
+	}
+	a.showSelectionMenu(pos)
+}
+
+// showSelectionMenu pops up the bulk-action menu for the current selection.
+func (a *App) showSelectionMenu(pos fyne.Position) {
+	n := len(a.selected)
+	readOnly := a.sess == nil || a.sess.Mode() == model.ReadOnly
+
+	tag := fyne.NewMenuItem(fmt.Sprintf("Tag %s…", plural(n, "row")), a.bulkTag)
+	comment := fyne.NewMenuItem(fmt.Sprintf("Comment %s…", plural(n, "row")), a.bulkComment)
+	tag.Disabled = readOnly
+	comment.Disabled = readOnly
+	clear := fyne.NewMenuItem("Clear selection", func() {
+		a.clearSelection()
+		a.refreshTable()
+	})
+	menu := fyne.NewMenu("", tag, comment, fyne.NewMenuItemSeparator(), clear)
+	widget.NewPopUpMenu(menu, a.win.Canvas()).ShowAtPosition(pos)
+}
+
+// plural renders "1 row" / "3 rows".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // editTagsPopup shows a drop-down of the tag palette anchored at the pointer.
