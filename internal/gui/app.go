@@ -129,8 +129,8 @@ func New() *App {
 		fyne:                app.NewWithID("nz.timeline.explorer"),
 		selRow:              -1,
 		selCol:              -1,
-		sidebarVisible:      true,
-		viewsSidebarVisible: true,
+		sidebarVisible:      false, // detail pane starts collapsed; Ctrl+B reveals it
+		viewsSidebarVisible: false, // saved-views pane starts collapsed; Ctrl+L reveals it
 		themeVariant:        theme.VariantDark,
 		startMode:           model.ReadOnly,
 		colFilter:           map[model.ColumnRef]string{},
