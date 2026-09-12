@@ -129,6 +129,9 @@ func (a *App) refreshViewsSection() {
 	}
 	for i := range views {
 		v := views[i]
+		if i > 0 {
+			a.viewsList.Add(widget.NewSeparator())
+		}
 		apply := widget.NewButton(v.Name, func() { a.applyView(v) })
 		apply.Alignment = widget.ButtonAlignLeading
 		del := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() { a.deleteView(v.Name) })

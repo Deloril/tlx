@@ -272,8 +272,11 @@ func (a *App) refreshIOCSection() {
 	if len(entries) == 0 {
 		a.iocListBox.Add(widget.NewLabel("(no IOC lists)"))
 	}
-	for _, e := range entries {
+	for i, e := range entries {
 		e := e
+		if i > 0 {
+			a.iocListBox.Add(widget.NewSeparator())
+		}
 		name := widget.NewButton(e.Name, func() { a.editIOCList(e) })
 		name.Alignment = widget.ButtonAlignLeading
 		run := widget.NewButtonWithIcon("", theme.MediaPlayIcon(), func() { a.runOneIOCList(e) })

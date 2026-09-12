@@ -166,15 +166,51 @@ func (a *App) deleteNote(n noteItem) error {
 func (a *App) buildNotesContent() fyne.CanvasObject {
 	a.notesArtifactsBox = container.NewVBox()
 	a.notesTimesBox = container.NewVBox()
+	a.noteAddArtifact = a.noteAddEntry(casefile.NoteArtifact, "add artifact…")
+	a.noteAddTime = a.noteAddEntry(casefile.NoteTime, "add time…")
 	a.refreshNotesSection()
 	head := func(s string) fyne.CanvasObject {
 		return widget.NewLabelWithStyle(s, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	}
 	return container.NewVBox(
-		head("Artifacts"), a.notesArtifactsBox,
+		head("Artifacts"), a.notesArtifactsBox, a.noteAddRow(a.noteAddArtifact),
 		widget.NewSeparator(),
-		head("Times"), a.notesTimesBox,
+		head("Times"), a.notesTimesBox, a.noteAddRow(a.noteAddTime),
 	)
+}
+
+// noteAddEntry builds the text box that types a note straight into a list.
+func (a *App) noteAddEntry(kind, placeholder string) *widget.Entry {
+	e := widget.NewEntry()
+	e.SetPlaceHolder(placeholder)
+	e.OnSubmitted = func(string) { a.commitManualNote(kind, e) }
+	return e
+}
+
+// noteAddRow wraps a manual-entry box with its add button.
+func (a *App) noteAddRow(e *widget.Entry) fyne.CanvasObject {
+	var kind string
+	if e == a.noteAddTime {
+		kind = casefile.NoteTime
+	} else {
+		kind = casefile.NoteArtifact
+	}
+	add := widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() { a.commitManualNote(kind, e) })
+	add.Importance = widget.LowImportance
+	return container.NewBorder(nil, nil, nil, add, e)
+}
+
+// commitManualNote adds the typed text to the list and clears the box.
+func (a *App) commitManualNote(kind string, e *widget.Entry) {
+	if strings.TrimSpace(e.Text) == "" {
+		return
+	}
+	if err := a.addNote(kind, e.Text); err != nil {
+		a.showError(err)
+		return
+	}
+	e.SetText("")
+	a.refreshNotesSection()
 }
 
 func (a *App) refreshNotesSection() {
@@ -183,7 +219,9 @@ func (a *App) refreshNotesSection() {
 	}
 	a.notesArtifactsBox.Objects = nil
 	a.notesTimesBox.Objects = nil
-	if !a.notesAvailable() {
+	avail := a.notesAvailable()
+	a.setManualNoteEnabled(avail)
+	if !avail {
 		hint := widget.NewLabel("Open a timeline to keep notes. Right-click a cell to add one.")
 		hint.Wrapping = fyne.TextWrapWord
 		a.notesArtifactsBox.Add(hint)
@@ -196,13 +234,32 @@ func (a *App) refreshNotesSection() {
 		if len(items) == 0 {
 			box.Add(widget.NewLabel("(none)"))
 		}
-		for _, n := range items {
+		for i, n := range items {
+			if i > 0 {
+				box.Add(widget.NewSeparator())
+			}
 			box.Add(a.noteRow(n))
 		}
 		box.Refresh()
 	}
 	fill(a.notesArtifactsBox, casefile.NoteArtifact)
 	fill(a.notesTimesBox, casefile.NoteTime)
+}
+
+// setManualNoteEnabled enables or disables the two manual-entry boxes, so they
+// only accept input when a timeline is open to hold the notes.
+func (a *App) setManualNoteEnabled(on bool) {
+	for _, e := range []*widget.Entry{a.noteAddArtifact, a.noteAddTime} {
+		if e == nil {
+			continue
+		}
+		if on {
+			e.Enable()
+		} else {
+			e.SetText("")
+			e.Disable()
+		}
+	}
 }
 
 // noteRow renders one note: done checkbox (strikes the text through), the text,

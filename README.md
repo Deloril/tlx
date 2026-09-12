@@ -120,10 +120,15 @@ panel; the float button pops one out into its own window, and "Dock to right"
 and IOC lists, each collapsible the same way.
 
 **Investigator's notes** are two per-timeline lists, Artifacts and Times, filled
-by right-clicking cells in the grid. Each entry has a checkbox that strikes it
+by right-clicking cells in the grid, by typing straight into the box under each
+list, or from the Details panel. Each entry has a checkbox that strikes it
 through when you're done, a button to filter the view to rows containing it, a
 delete button, and — inside a case — a button to copy it into the case's default
 IOC list. The lists belong to one timeline and are not shared with the others.
+
+Field values in the Details panel are selectable: highlight part of a long
+Summary (or the whole field) and right-click to add just that text to the
+Artifacts or Times list.
 
 **Timeline comments** is a free-text field per timeline for running notes
 towards a write-up, saved as you type. When it is not blank it heads an export

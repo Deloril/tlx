@@ -287,9 +287,9 @@ func (a *App) showDetail(master int) {
 		}
 		for i, h := range a.idx.Headers() {
 			val := a.valueOf(master, model.ColumnRef(i))
-			lbl := widget.NewLabel(val)
-			lbl.Wrapping = fyne.TextWrapWord
-			items = append(items, widget.NewLabelWithStyle(h, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), lbl)
+			items = append(items, widget.NewSeparator(),
+				widget.NewLabelWithStyle(h, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				newSelectableLabel(a, val))
 		}
 		a.detail.Objects = items
 		a.detail.Refresh()
@@ -333,8 +333,6 @@ func (a *App) showDetail(master int) {
 			widget.NewLabel("Comment (Shift+Enter for newline, Enter to save):"), ce)
 	}
 
-	items = append(items, widget.NewSeparator())
-
 	// One field per data column. Adopted tag/comment columns are shown as the
 	// Tags and Comment blocks above, not repeated here.
 	for i, h := range a.idx.Headers() {
@@ -343,6 +341,8 @@ func (a *App) showDetail(master int) {
 			continue
 		}
 		val := a.valueOf(master, model.ColumnRef(i))
+		items = append(items, widget.NewSeparator(),
+			widget.NewLabelWithStyle(h, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
 		if mode == model.WorldWrite {
 			e := widget.NewMultiLineEntry()
 			e.SetText(val)
@@ -354,11 +354,9 @@ func (a *App) showDetail(master int) {
 				}
 				a.refreshTable()
 			}
-			items = append(items, widget.NewLabelWithStyle(h, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), e)
+			items = append(items, e)
 		} else {
-			lbl := widget.NewLabel(val)
-			lbl.Wrapping = fyne.TextWrapWord
-			items = append(items, widget.NewLabelWithStyle(h, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), lbl)
+			items = append(items, newSelectableLabel(a, val))
 		}
 	}
 

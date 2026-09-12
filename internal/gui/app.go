@@ -88,6 +88,8 @@ type App struct {
 	// comments field, both in the right dock.
 	notesArtifactsBox *fyne.Container
 	notesTimesBox     *fyne.Container
+	noteAddArtifact   *widget.Entry // manual entry for the Artifacts list
+	noteAddTime       *widget.Entry // manual entry for the Times list
 	commentEntry      *widget.Entry
 	suppressComment   bool // set while loading the comment field, to swallow OnChanged
 
