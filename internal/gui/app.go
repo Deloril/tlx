@@ -50,6 +50,12 @@ type App struct {
 	// tags and comment are ordinary data columns).
 	annotCols bool
 
+	// adopted names the source columns of the open timeline that already hold
+	// tags/comments and have been taken over as the session's annotations. Those
+	// data columns are hidden (the virtual Tags/Comment columns stand in for
+	// them) and dropped from an export. Both -1 when none, or in master mode.
+	adopted model.AdoptedColumns
+
 	cols      []column        // all columns, in display order
 	visible   []int           // indices into cols that are currently shown
 	sortState []model.SortKey // mirror of view sort keys, for header arrows
@@ -207,6 +213,11 @@ func (a *App) buildColumns() {
 		)
 	}
 	for i, h := range a.idx.Headers() {
+		// A column adopted as the session's tags/comments is represented by the
+		// virtual Tags/Comment column, so don't show the raw source column.
+		if a.annotCols && a.adopted.Has(i) {
+			continue
+		}
 		title := h
 		if i < len(a.colNames) && a.colNames[i] != "" {
 			title = a.colNames[i]
@@ -278,6 +289,13 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	}
 	a.idx, a.sess = idx, sess
 	a.view = model.NewView(idx, sess)
+	// Detect adopted tag/comment columns only where the virtual annotation
+	// columns exist; the master timeline has its own real Tags/Comment columns.
+	if a.annotCols {
+		a.adopted = model.DetectAnnotationColumns(idx.Headers())
+	} else {
+		a.adopted = model.AdoptedColumns{Tag: -1, Comment: -1}
+	}
 	a.sortState = nil
 	a.selRow, a.selCol = -1, -1
 	a.selected = map[int]bool{}

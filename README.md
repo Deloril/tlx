@@ -71,6 +71,15 @@ month or day covers the whole period, so `after 2020` means 2021 onward. Shift a
 time with `+`/`-` and a duration (`s`, `m`, `h`, `d`, `w`, combining as `1d12h`);
 `now` and `time` are the current time.
 
+## Existing tag/comment columns
+
+If an imported timeline already carries a tags column (`Tag`/`Tags`) or a
+comment column (`Comment`/`Comments`/`Note`/`Notes`), tlx adopts it instead of
+adding its own: the values seed the session's tags and comments, so they are
+coloured, searchable with `tag=`, feed the master view, and are written back on
+save. There is one set of annotation columns, not two. Tag cells split on commas
+and semicolons.
+
 ## IOC lists
 
 A case keeps a list of indicators, one per line, matched against the open

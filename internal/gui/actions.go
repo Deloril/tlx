@@ -335,9 +335,13 @@ func (a *App) showDetail(master int) {
 
 	items = append(items, widget.NewSeparator())
 
-	// One field per data column.
+	// One field per data column. Adopted tag/comment columns are shown as the
+	// Tags and Comment blocks above, not repeated here.
 	for i, h := range a.idx.Headers() {
 		i := i
+		if a.annotCols && a.adopted.Has(i) {
+			continue
+		}
 		val := a.valueOf(master, model.ColumnRef(i))
 		if mode == model.WorldWrite {
 			e := widget.NewMultiLineEntry()
@@ -375,6 +379,13 @@ func (a *App) openFile() {
 			sess := model.NewSession(path)
 			if err := sess.Load(); err != nil {
 				a.showError(err)
+			}
+			// A fresh file (no sidecar) with existing tag/comment columns seeds
+			// its annotations from them.
+			if !sess.Loaded() {
+				if err := sess.SeedFromColumns(idx, model.DetectAnnotationColumns(idx.Headers())); err != nil {
+					a.showError(err)
+				}
 			}
 			sess.SetMode(a.startMode)
 			a.cse, a.curTimeline, a.masterMode = nil, nil, false
@@ -421,7 +432,7 @@ func (a *App) save() {
 
 	dest := annotatedPath(a.idx.Path())
 	full := model.NewView(a.idx, a.sess) // all rows, natural order
-	if err := model.Export(full, a.sess, dest); err != nil {
+	if err := model.ExportOmitting(full, a.sess, dest, a.omitCols()); err != nil {
 		a.showError(err)
 		return
 	}
@@ -438,12 +449,29 @@ func annotatedPath(src string) string {
 
 func (a *App) export() {
 	a.showSaveFile("", func(path string) {
-		if err := model.Export(a.view, a.sess, path); err != nil {
+		if err := model.ExportOmitting(a.view, a.sess, path, a.omitCols()); err != nil {
 			a.showError(err)
 			return
 		}
 		dialog.ShowInformation("Exported", fmt.Sprintf("%d rows written to\n%s", a.view.Len(), path), a.win)
 	})
+}
+
+// omitCols is the set of source data columns to drop from an export: the
+// adopted tag/comment columns, whose content is written as the appended
+// Tags/Comment columns instead. Nil when nothing is adopted.
+func (a *App) omitCols() map[int]bool {
+	if !a.annotCols || !a.adopted.Any() {
+		return nil
+	}
+	m := map[int]bool{}
+	if a.adopted.Tag >= 0 {
+		m[a.adopted.Tag] = true
+	}
+	if a.adopted.Comment >= 0 {
+		m[a.adopted.Comment] = true
+	}
+	return m
 }
 
 func (a *App) confirmIfDirty(then func()) {
@@ -685,6 +713,13 @@ Filtering
   button. Type a substring and press Enter to narrow that one column. These
   boxes combine (AND) with the query and structured conditions, and matches
   are highlighted in the grid.
+
+Existing tag/comment columns
+  If a timeline already has a Tags column (Tag/Tags) or a comment column
+  (Comment/Comments/Note/Notes), those become the annotation columns rather
+  than adding new ones: their values seed the row tags and comments, so they
+  are coloured, filter with tag=, feed the master view, and edits write back
+  to them on save. Tag cells split on commas and semicolons.
 
 Cases (File and Case menus)
   A case groups several timelines in one database (.tlxdb), chosen

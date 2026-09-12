@@ -219,6 +219,18 @@ func (a *App) addTimelineToCase() {
 			}
 			// Open it straight away, reusing the index we just indexed.
 			a.openTimelineWithIndex(tl, idx)
+			// A timeline that already carries tag/comment columns seeds its
+			// annotations from them on first import, persisted to the case.
+			if a.adopted.Any() {
+				if err := a.sess.SeedFromColumns(a.idx, a.adopted); err != nil {
+					a.showError(err)
+				} else if err := a.cse.SaveAnnotations(*a.curTimeline, a.sess.Snapshot(), a.idx); err != nil {
+					a.showError(err)
+				} else {
+					a.sess.MarkSaved()
+				}
+				a.refreshTable()
+			}
 			// Match the case's IOC list against the new timeline.
 			a.runIOCs(true)
 		})
@@ -379,7 +391,9 @@ func masterGrid(entries []casefile.MasterEntry) (headers []string, records [][]s
 			needSummary = true
 		}
 		for _, h := range e.DisplayHeaders {
-			if h == "" {
+			if h == "" || model.IsAnnotationHeader(h) {
+				// Skip a timeline's own tag/comment columns: their content is
+				// already in the fixed Tags and Comment columns via the session.
 				continue
 			}
 			if _, ok := seen[h]; !ok {

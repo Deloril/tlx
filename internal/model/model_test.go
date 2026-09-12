@@ -380,3 +380,32 @@ func TestExport(t *testing.T) {
 		t.Fatalf("export =\n%q\nwant\n%q", got, want)
 	}
 }
+
+// When a source CSV already has Tags/Comment columns that were adopted as the
+// session's annotations, ExportOmitting drops them so the appended Tags/Comment
+// columns do not duplicate the source ones.
+func TestExportOmitting(t *testing.T) {
+	idx := openT(t, "host,Tags,Comment,event\nalpha,old-tag,old note,login\nbravo,,,logout\n")
+	s := NewSession(idx.Path())
+	ac := DetectAnnotationColumns(idx.Headers()) // Tag=1, Comment=2
+	if err := s.SeedFromColumns(idx, ac); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMode(Investigator)
+	s.AddTag(1, "new-tag")
+	v := NewView(idx, s)
+
+	dest := filepath.Join(t.TempDir(), "out.csv")
+	omit := map[int]bool{ac.Tag: true, ac.Comment: true}
+	if err := ExportOmitting(v, s, dest, omit); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(dest)
+	got := string(data)
+	// Source Tags/Comment columns are gone; the appended ones carry the seeded
+	// values (row 0) and the new tag (row 1).
+	want := "host,event,Tags,Comment\nalpha,login,old-tag,old note\nbravo,logout,new-tag,\n"
+	if got != want {
+		t.Fatalf("export =\n%q\nwant\n%q", got, want)
+	}
+}

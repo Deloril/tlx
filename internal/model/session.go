@@ -81,7 +81,8 @@ type Session struct {
 	tagDefs  []TagDef
 	tagIndex map[string]int
 
-	dirty bool
+	dirty  bool
+	loaded bool // a sidecar file was read (so we should not re-seed from columns)
 }
 
 // NewSession returns an empty session for sourcePath in read-only mode.
@@ -129,6 +130,15 @@ func (s *Session) Dirty() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.dirty
+}
+
+// Loaded reports whether a sidecar file was read for this session. It is used to
+// decide whether to seed annotations from a timeline's existing tag/comment
+// columns: only when there are no stored annotations to load.
+func (s *Session) Loaded() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.loaded
 }
 
 // MarkSaved clears the dirty flag, e.g. after the annotations have been written
@@ -459,6 +469,7 @@ func (s *Session) Load() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.loaded = true
 	// Stored palette overrides the seeded default colours and defines priority
 	// order; the defaults remain present because they were seeded in NewSession.
 	for _, d := range sc.TagDefs {
