@@ -123,17 +123,17 @@ func (a *App) newTable() *bigTable {
 		a.updateCell(id, o)
 	}
 	t.ShowHeaderRow = true
-	// The header holds the sort button and a per-column filter box side by side —
-	// one row tall on purpose. Stacking them vertically makes every data row twice
-	// as tall (Fyne sizes data rows to the header's height), which is why the box
-	// sits beside the button rather than under it.
+	// Two-row header: the sort button (column title) sits on top and the
+	// per-column filter box underneath. Fyne sizes the header row from this
+	// template's MinSize and data rows from the cell template separately, so the
+	// taller header does not stretch the data rows.
 	t.CreateHeader = func() fyne.CanvasObject {
 		sort := widget.NewButton("", nil)
 		sort.Alignment = widget.ButtonAlignLeading
 		sort.Importance = widget.LowImportance
 		filter := widget.NewEntry()
 		filter.SetPlaceHolder("filter…")
-		return container.NewBorder(nil, nil, sort, nil, filter)
+		return container.NewVBox(sort, filter)
 	}
 	t.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		a.updateHeader(id, o)
