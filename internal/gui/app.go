@@ -5,6 +5,8 @@ package gui
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -155,7 +157,20 @@ type App struct {
 	hoverText  *widget.RichText
 
 	startMode model.Mode // mode applied to files opened via the dialog
+
+	// Autosave. Annotation edits arm a short debounce timer (autosaveMu guards
+	// it) so a burst of changes — a bulk tag, an IOC run — collapses into one
+	// write. closing is set on shutdown so a late timer can't fire into a
+	// half-torn-down app.
+	autosaveMu    sync.Mutex
+	autosaveTimer *time.Timer
+	closing       bool
 }
+
+// autosaveDelay is how long after the last annotation change the autosave fires.
+// Long enough to coalesce a burst, short enough that little is at risk if the
+// process dies.
+const autosaveDelay = 600 * time.Millisecond
 
 // New builds an explorer with no file loaded yet. Call OpenInitial to load one,
 // or let the user open one from the toolbar; either way Run shows the window.
@@ -307,6 +322,14 @@ func (a *App) buildUI() {
 
 // reloadWith swaps the open file, keeping the same window and shortcuts.
 func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
+	// Drop any autosave still pending for the outgoing session; the context
+	// switch that got us here already flushed it (see confirmIfDirty).
+	a.autosaveMu.Lock()
+	if a.autosaveTimer != nil {
+		a.autosaveTimer.Stop()
+		a.autosaveTimer = nil
+	}
+	a.autosaveMu.Unlock()
 	if a.idx != nil {
 		a.idx.Close()
 	}
@@ -448,6 +471,60 @@ func (a *App) selectedMaster() int {
 
 func (a *App) refreshTable() {
 	a.table.Refresh()
+	a.refreshStatus()
+	a.scheduleAutosave()
+}
+
+// scheduleAutosave arms (or re-arms) the debounce timer whenever there are
+// unsaved annotations. It is called from refreshTable, which runs after every
+// annotation change, so any edit path schedules a save; a run of edits just
+// keeps pushing the timer out, collapsing into one write. Cheap and a no-op
+// when nothing is dirty.
+func (a *App) scheduleAutosave() {
+	if a.sess == nil || !a.sess.Dirty() || a.masterMode {
+		return
+	}
+	a.autosaveMu.Lock()
+	defer a.autosaveMu.Unlock()
+	if a.closing {
+		return
+	}
+	if a.autosaveTimer != nil {
+		a.autosaveTimer.Stop()
+	}
+	a.autosaveTimer = time.AfterFunc(autosaveDelay, func() {
+		fyne.Do(a.flushAutosave)
+	})
+}
+
+// flushAutosave persists annotations now: to the case database inside a case, or
+// to the sidecar file for a standalone timeline. Errors surface in the status
+// bar rather than a modal, so a transient failure doesn't interrupt work. Runs
+// on the UI goroutine (via fyne.Do or a direct call from onClose).
+func (a *App) flushAutosave() {
+	if a.sess == nil || a.masterMode || !a.sess.Dirty() {
+		return
+	}
+	var err error
+	switch {
+	case a.cse != nil:
+		if a.curTimeline == nil {
+			return // master view or no timeline open; nothing to persist
+		}
+		if err = a.cse.SaveAnnotations(*a.curTimeline, a.sess.Snapshot(), a.idx); err == nil {
+			a.sess.MarkSaved()
+		}
+	case a.idx != nil:
+		err = a.sess.Save() // writes the <file>.tlx.json sidecar; clears dirty
+	default:
+		return
+	}
+	if err != nil {
+		if a.statusDirty != nil {
+			a.statusDirty.SetText("● autosave failed")
+		}
+		return
+	}
 	a.refreshStatus()
 }
 

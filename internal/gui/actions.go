@@ -432,13 +432,18 @@ func (a *App) save() {
 		return
 	}
 
+	// Persist annotations to the sidecar (the canonical store reloaded on open),
+	// so an explicit save leaves the same on-disk state autosave would have.
+	if err := a.sess.Save(); err != nil {
+		a.showError(err)
+		return
+	}
 	dest := annotatedPath(a.idx.Path())
 	full := model.NewView(a.idx, a.sess) // all rows, natural order
 	if err := model.ExportOmitting(full, a.sess, dest, a.omitCols()); err != nil {
 		a.showError(err)
 		return
 	}
-	a.sess.MarkSaved()
 	a.refreshStatus()
 	dialog.ShowInformation("Saved", fmt.Sprintf("%d rows written to\n%s", a.idx.RowCount(), dest), a.win)
 }
@@ -476,13 +481,22 @@ func (a *App) omitCols() map[int]bool {
 	return m
 }
 
+// confirmIfDirty runs then() once any unsaved annotations are dealt with. With
+// autosave on, it flushes first, so switching context saves rather than
+// discards; the discard prompt only appears if that save failed (e.g. a write
+// error), as a last resort before losing work.
 func (a *App) confirmIfDirty(then func()) {
 	if a.sess == nil || !a.sess.Dirty() {
 		then()
 		return
 	}
-	dialog.ShowConfirm("Unsaved changes",
-		"Discard unsaved annotations?", func(ok bool) {
+	a.flushAutosave()
+	if !a.sess.Dirty() { // saved cleanly
+		then()
+		return
+	}
+	dialog.ShowConfirm("Save failed",
+		"Annotations could not be autosaved. Discard them and continue?", func(ok bool) {
 			if ok {
 				then()
 			}
@@ -490,6 +504,12 @@ func (a *App) confirmIfDirty(then func()) {
 }
 
 func (a *App) onClose() {
+	a.autosaveMu.Lock()
+	a.closing = true
+	if a.autosaveTimer != nil {
+		a.autosaveTimer.Stop()
+	}
+	a.autosaveMu.Unlock()
 	a.confirmIfDirty(func() {
 		if a.filterWin != nil {
 			a.filterWin.Close()
@@ -726,9 +746,11 @@ Filtering
   Per-column boxes: the Filter row button (or Ctrl+Shift+F) reveals a small
   filter box under each header's sort button. Type a substring and press Enter
   to narrow that one column. A lone * keeps only rows where that column is
-  non-empty. These boxes combine (AND) with the query and structured
-  conditions, and matches are highlighted in the grid and hover tooltip. The
-  filter row is off by default because it makes the grid rows taller.
+  non-empty. Under the Tags column the box is a drop-down instead: the same tag
+  checklist as the filter window. These boxes combine (AND) with the query and
+  structured conditions, and matches are highlighted in the grid and hover
+  tooltip. The filter row is off by default because it makes the grid rows
+  taller.
 
 Existing tag/comment columns
   If a timeline already has a Tags column (Tag/Tags) or a comment column
@@ -785,10 +807,15 @@ Saved views (left sidebar, toggle with Ctrl+L or the Views button)
 Hover a truncated cell to see its full contents in a pop-up box.
 Use the palette button to switch between light and dark themes.
 
-Save writes every row to <file>.annotated.csv for a standalone CSV (data
-plus Tags and Comment, with cell edits applied); the source CSV is never
-modified. Inside a case, Save persists to the case database.
-Export writes the current filtered, sorted view to a CSV.`
+Autosave. Tags, comments and edits are written shortly after each change
+on their own — to the <file>.tlx.json sidecar for a standalone timeline,
+or to the case database inside a case. You don't need to save by hand; the
+status bar shows "saved" once a change is on disk.
+
+Save (Ctrl+S) also writes every row to <file>.annotated.csv for a
+standalone CSV (data plus Tags and Comment, with cell edits applied); the
+source CSV is never modified. Inside a case, Save persists to the case
+database. Export writes the current filtered, sorted view to a CSV.`
 	lbl := widget.NewLabel(help)
 	lbl.TextStyle = fyne.TextStyle{Monospace: true}
 	d := dialog.NewCustom("Help", "Close", container.NewVScroll(lbl), a.win)

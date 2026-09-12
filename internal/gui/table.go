@@ -144,7 +144,14 @@ func (a *App) newTable() *bigTable {
 		}
 		filter := widget.NewEntry()
 		filter.SetPlaceHolder("filter…")
-		return container.NewVBox(sort, filter)
+		// The Tags column filters via a tag drop-down instead of a text box; both
+		// live in the template and updateHeader shows whichever the column needs.
+		// A hidden object takes no space in the VBox, so the header height stays
+		// that of sort+filter (see the row-height note above).
+		tagBtn := widget.NewButton("tags ▾", nil)
+		tagBtn.Alignment = widget.ButtonAlignLeading
+		tagBtn.Hide()
+		return container.NewVBox(sort, filter, tagBtn)
 	}
 	t.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		a.updateHeader(id, o)
@@ -238,18 +245,17 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 
 func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 	box, ok := o.(*fyne.Container)
-	if !ok {
+	if !ok || len(box.Objects) == 0 {
 		return
 	}
-	var btn *widget.Button
+	// The template is VBox(sort) or VBox(sort, filter, tagBtn); read by position
+	// so the two buttons (sort and the tag drop-down) aren't confused.
+	btn, _ := box.Objects[0].(*widget.Button)
 	var filter *widget.Entry
-	for _, obj := range box.Objects {
-		switch w := obj.(type) {
-		case *widget.Button:
-			btn = w
-		case *widget.Entry:
-			filter = w
-		}
+	var tagBtn *widget.Button
+	if len(box.Objects) >= 3 {
+		filter, _ = box.Objects[1].(*widget.Entry)
+		tagBtn, _ = box.Objects[2].(*widget.Button)
 	}
 	if btn == nil {
 		return
@@ -262,6 +268,11 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 			filter.OnChanged = nil
 			filter.OnSubmitted = nil
 			filter.SetText("")
+			filter.Show()
+		}
+		if tagBtn != nil {
+			tagBtn.OnTapped = nil
+			tagBtn.Hide()
 		}
 		return
 	}
@@ -278,6 +289,29 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 	if filter == nil {
 		return
 	}
+
+	// Tags column: a tag drop-down stands in for the text filter, matching the
+	// filter window. Header cells are reused across columns as the grid scrolls,
+	// so flip the two widgets' visibility every time.
+	if ref == model.ColTags {
+		filter.OnChanged = nil
+		filter.OnSubmitted = nil
+		filter.Hide()
+		if tagBtn != nil {
+			tagBtn.Show()
+			tagBtn.SetText(a.tagFilterHeaderLabel())
+			tagBtn.OnTapped = func() {
+				a.showTagFilterPopup(tagBtn, a.win.Canvas(), a.tagFilterHeaderLabel)
+			}
+		}
+		return
+	}
+	if tagBtn != nil {
+		tagBtn.OnTapped = nil
+		tagBtn.Hide()
+	}
+	filter.Show()
+
 	// Per-column filter box. Detach OnChanged before syncing the text so setting
 	// it doesn't fire the handler; only overwrite when it actually differs, so a
 	// refresh never disturbs the caret of a box being typed into.

@@ -41,8 +41,8 @@ func (a *App) setTagFilter(name string, on bool) {
 	}
 }
 
-// tagFilterLabel is the drop-down button's text, showing how many tags are
-// selected.
+// tagFilterLabel is the filter-window drop-down button's text, showing how many
+// tags are selected.
 func (a *App) tagFilterLabel() string {
 	n := len(a.selectedTagNames())
 	if n == 0 {
@@ -51,18 +51,31 @@ func (a *App) tagFilterLabel() string {
 	return fmt.Sprintf("Tags: %d ▾", n)
 }
 
-// tagFilterButton builds the drop-down button that opens the tag checklist.
+// tagFilterHeaderLabel is the compact label for the Tags-column filter-row
+// drop-down, sized to fit under the narrow header.
+func (a *App) tagFilterHeaderLabel() string {
+	n := len(a.selectedTagNames())
+	if n == 0 {
+		return "tags ▾"
+	}
+	return plural(n, "tag") + " ▾"
+}
+
+// tagFilterButton builds the filter-window drop-down button that opens the tag
+// checklist.
 func (a *App) tagFilterButton() *widget.Button {
 	btn := widget.NewButton(a.tagFilterLabel(), nil)
-	btn.OnTapped = func() { a.showTagFilterPopup(btn) }
+	btn.OnTapped = func() { a.showTagFilterPopup(btn, a.filterWin.Canvas(), a.tagFilterLabel) }
 	return btn
 }
 
 // showTagFilterPopup opens the tag checklist anchored under the drop-down
-// button. Ticking a tag re-applies the filter live and keeps the popup open so
-// several tags can be toggled in one go.
-func (a *App) showTagFilterPopup(anchor *widget.Button) {
-	if a.filterWin == nil || a.sess == nil {
+// button, on the given canvas. Ticking a tag re-applies the filter live and
+// keeps the popup open so several tags can be toggled in one go. The same popup
+// backs both the filter window's Tags button and the Tags-column header
+// drop-down.
+func (a *App) showTagFilterPopup(anchor *widget.Button, canvas fyne.Canvas, label func() string) {
+	if canvas == nil || a.sess == nil {
 		return
 	}
 	defs := a.sess.TagDefs()
@@ -75,7 +88,7 @@ func (a *App) showTagFilterPopup(anchor *widget.Button) {
 
 	var pop *widget.PopUp
 	reapply := func() {
-		anchor.SetText(a.tagFilterLabel())
+		anchor.SetText(label())
 		a.commitFilter()
 	}
 	for _, d := range defs {
@@ -108,7 +121,7 @@ func (a *App) showTagFilterPopup(anchor *widget.Button) {
 	if h > 380 {
 		h = 380
 	}
-	pop = widget.NewPopUp(container.NewVScroll(box), a.filterWin.Canvas())
+	pop = widget.NewPopUp(container.NewVScroll(box), canvas)
 	pop.Resize(fyne.NewSize(240, h))
 	at := a.fyne.Driver().AbsolutePositionForObject(anchor)
 	pop.ShowAtPosition(at.Add(fyne.NewPos(0, anchor.Size().Height)))

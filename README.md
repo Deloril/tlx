@@ -29,9 +29,10 @@ The mode selector in the toolbar switches between:
 - **World-write** — also edit any cell value.
 
 Tags, comments and edits are stored in a sidecar file next to the source
-(`<file>.tlx.json`). The original CSV is never modified. Export writes the
-current view to a new CSV with `Tags` and `Comment` columns appended and any
-edits applied.
+(`<file>.tlx.json`); inside a case they go to the case database instead. They
+autosave shortly after each change, so nothing needs saving by hand. The
+original CSV is never modified. Export writes the current view to a new CSV with
+`Tags` and `Comment` columns appended and any edits applied.
 
 ## How it handles large files
 
@@ -63,14 +64,14 @@ matches one column (case-insensitive by default), and terms combine with
 `Summary=derp AND (tag=bad OR tag=suspicious)`. Wrap a value in `/…/` for a
 regular expression. The toolbar's Filter row button (or Ctrl+Shift+F) reveals a
 box under each column header that filters just that column; press Enter to
-apply, and a lone `*` keeps rows where the column is non-empty. The filter row
-is off by default because it makes the grid rows taller. The Clear filters
-button (or Esc) drops everything at once. "Tagged only" limits the view to
-annotated rows. Whatever the filter matches is highlighted in the grid and in
-the hover tooltip.
+apply, and a lone `*` keeps rows where the column is non-empty. Under the Tags
+column the box is a tag drop-down rather than a text box. The filter row is off
+by default because it makes the grid rows taller. The Clear filters button (or
+Esc) drops everything at once. "Tagged only" limits the view to annotated rows.
+Whatever the filter matches is highlighted in the grid and in the hover tooltip.
 
-The filter window's Tags button opens a checklist of every tag; tick one or
-more to keep rows carrying any of them, without typing `tag=`.
+The filter window's Tags button opens the same checklist of every tag; tick one
+or more to keep rows carrying any of them, without typing `tag=`.
 
 Right-click a cell holding a timestamp for "Filter ±5 min around this time",
 which narrows that column to a 5-minute window either side of the value.
