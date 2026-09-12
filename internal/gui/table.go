@@ -93,7 +93,11 @@ func (a *App) newTable() *bigTable {
 		b.Importance = widget.LowImportance
 		f := widget.NewEntry()
 		f.PlaceHolder = "filter"
-		return container.NewBorder(b, nil, nil, nil, f)
+		// Sort button and filter box sit side by side so the header stays one
+		// row tall. Fyne derives the uniform data-row height from the max of the
+		// cell and header min sizes (Table.templateSize), so a taller header
+		// would make every data row taller to match.
+		return container.NewBorder(nil, nil, nil, f, b)
 	}
 	t.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		a.updateHeader(id, o)
