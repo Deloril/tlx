@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/csv"
 	"os"
+	"strings"
 )
 
 // Export writes the rows currently visible in v, in view order, to a new CSV at
@@ -17,6 +18,14 @@ func Export(v *View, s *Session, destPath string) error {
 // tag/comment columns have been adopted as the session's annotations, so the
 // appended Tags/Comment columns do not duplicate the source ones.
 func ExportOmitting(v *View, s *Session, destPath string, omit map[int]bool) error {
+	return ExportOmittingWithComment(v, s, destPath, omit, "")
+}
+
+// ExportOmittingWithComment is ExportOmitting with an optional timeline-comment
+// prelude. When comment is non-blank a leading row is written before the header:
+// two cells, "Timeline comments:" and the comment text. The header and event
+// rows follow unchanged.
+func ExportOmittingWithComment(v *View, s *Session, destPath string, omit map[int]bool, comment string) error {
 	f, err := os.Create(destPath)
 	if err != nil {
 		return err
@@ -26,6 +35,12 @@ func ExportOmitting(v *View, s *Session, destPath string, omit map[int]bool) err
 	w := csv.NewWriter(f)
 	w.Comma = rune(v.idx.Delimiter())
 	defer w.Flush()
+
+	if strings.TrimSpace(comment) != "" {
+		if err := w.Write([]string{"Timeline comments:", comment}); err != nil {
+			return err
+		}
+	}
 
 	header := make([]string, 0, len(v.idx.Headers())+2)
 	for c, h := range v.idx.Headers() {

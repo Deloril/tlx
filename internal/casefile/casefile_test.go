@@ -337,6 +337,289 @@ func TestFileBackedTimelineEndToEnd(t *testing.T) {
 	}
 }
 
+func TestIOCLists(t *testing.T) {
+	c := newCase(t)
+
+	// A fresh case already has its default list, named after the case file.
+	defaultLists, err := c.IOCLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultLists) != 1 || defaultLists[0].Name != "case" {
+		t.Fatalf("default lists = %+v, want one named %q", defaultLists, "case")
+	}
+	if body, err := c.IOCListBody(defaultLists[0].ID); err != nil || body != "" {
+		t.Fatalf("default body = %q, %v, want empty", body, err)
+	}
+
+	a, err := c.CreateIOCList("Alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := c.CreateIOCList("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lists, err := c.IOCLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ordered by name: Alpha, beta, case.
+	if len(lists) != 3 || lists[0].Name != "Alpha" || lists[1].Name != "beta" || lists[2].Name != "case" {
+		t.Fatalf("lists = %+v", lists)
+	}
+
+	if err := c.SetIOCListBody(a.ID, "1.2.3.4\nevil.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := c.IOCListBody(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != "1.2.3.4\nevil.example.com" {
+		t.Errorf("body = %q", body)
+	}
+	if got, err := c.IOCListBody(b.ID); err != nil || got != "" {
+		t.Errorf("beta body = %q, %v, want empty", got, err)
+	}
+
+	// Duplicate names, exact and case-insensitive, are rejected.
+	if _, err := c.CreateIOCList("Alpha"); err == nil {
+		t.Error("CreateIOCList duplicate: want error")
+	}
+	if _, err := c.CreateIOCList("ALPHA"); err == nil {
+		t.Error("CreateIOCList case-insensitive duplicate: want error")
+	}
+	if _, err := c.CreateIOCList("   "); err == nil {
+		t.Error("CreateIOCList blank name: want error")
+	}
+
+	// Rename works, and is subject to the same rules.
+	if err := c.RenameIOCList(b.ID, "Gamma"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RenameIOCList(a.ID, "gamma"); err == nil {
+		t.Error("RenameIOCList to case-insensitive duplicate: want error")
+	}
+	// Renaming a list to its own current name (any case) must not self-collide.
+	if err := c.RenameIOCList(b.ID, "GAMMA"); err != nil {
+		t.Errorf("rename to own name (different case): %v", err)
+	}
+
+	if err := c.DeleteIOCList(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	lists, err = c.IOCLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lists) != 2 || lists[0].Name != "GAMMA" || lists[1].Name != "case" {
+		t.Fatalf("lists after delete = %+v", lists)
+	}
+}
+
+// TestIOCListMigratesLegacyValue exercises the one-time migration of the old
+// single meta['ioc_list'] value into the new per-case default list, named
+// after the case file rather than "IOCs".
+func TestIOCListMigratesLegacyValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.tlxdb")
+	c, err := Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force the pre-migration state: drop the seeded default list and its
+	// flag, and write the legacy meta value migrate() should pick up.
+	if _, err := c.db.Exec(`DELETE FROM ioc_lists`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.db.Exec(`DELETE FROM meta WHERE key='ioc_lists_seeded'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.db.Exec(`INSERT INTO meta(key,value) VALUES('ioc_list','1.1.1.1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	lists, err := c.IOCLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lists) != 1 || lists[0].Name != "legacy" {
+		t.Fatalf("lists = %+v, want one named %q", lists, "legacy")
+	}
+	body, err := c.IOCListBody(lists[0].ID)
+	if err != nil || body != "1.1.1.1" {
+		t.Fatalf("body = %q, %v, want %q", body, err, "1.1.1.1")
+	}
+	var n int
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM meta WHERE key='ioc_list'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("legacy meta row still present")
+	}
+
+	// Running migrate() again must not resurrect or duplicate anything, even
+	// after the user deletes the seeded list.
+	if err := c.DeleteIOCList(lists[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	lists, err = c.IOCLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lists) != 0 {
+		t.Fatalf("lists after re-migrate = %+v, want none (deletion must stick)", lists)
+	}
+	c.Close()
+}
+
+func TestNotes(t *testing.T) {
+	c := newCase(t)
+	idx := memIndex([]string{"Timestamp", "Msg"}, [][]string{{"2026-09-01T08:12:03Z", "x"}})
+	tl, err := c.AddTimeline("t1", idx, "2026-09-11T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := c.AddTimeline("t2", idx, "2026-09-11T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a1, err := c.AddNote(tl.ID, NoteArtifact, "first artifact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := c.AddNote(tl.ID, NoteArtifact, "second artifact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm, err := c.AddNote(tl.ID, NoteTime, "2026-09-01T08:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Isolation: a note on the other timeline must not show up here.
+	if _, err := c.AddNote(other.ID, NoteArtifact, "belongs to t2"); err != nil {
+		t.Fatal(err)
+	}
+
+	artifacts, err := c.Notes(tl.ID, NoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 2 || artifacts[0].ID != a1.ID || artifacts[1].ID != a2.ID {
+		t.Fatalf("artifacts = %+v, want [%d %d] in order", artifacts, a1.ID, a2.ID)
+	}
+	if artifacts[0].Text != "first artifact" || artifacts[0].Done {
+		t.Errorf("artifacts[0] = %+v", artifacts[0])
+	}
+
+	times, err := c.Notes(tl.ID, NoteTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(times) != 1 || times[0].ID != tm.ID || times[0].Text != "2026-09-01T08:00:00Z" {
+		t.Fatalf("times = %+v", times)
+	}
+
+	otherArtifacts, err := c.Notes(other.ID, NoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(otherArtifacts) != 1 || otherArtifacts[0].Text != "belongs to t2" {
+		t.Fatalf("other timeline artifacts = %+v, want isolated single note", otherArtifacts)
+	}
+
+	// Toggle done and confirm it persists across a fresh read.
+	if err := c.SetNoteDone(a1.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err = c.Notes(tl.ID, NoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !artifacts[0].Done {
+		t.Errorf("artifacts[0].Done = false after SetNoteDone(true)")
+	}
+	if err := c.SetNoteDone(a1.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err = c.Notes(tl.ID, NoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifacts[0].Done {
+		t.Errorf("artifacts[0].Done = true after SetNoteDone(false)")
+	}
+
+	// Delete removes just the one note.
+	if err := c.DeleteNote(a2.ID); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err = c.Notes(tl.ID, NoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 1 || artifacts[0].ID != a1.ID {
+		t.Fatalf("artifacts after delete = %+v, want only %d", artifacts, a1.ID)
+	}
+
+	// Blank text and invalid kind are errors.
+	if _, err := c.AddNote(tl.ID, NoteArtifact, "   "); err == nil {
+		t.Error("AddNote blank text: want error")
+	}
+	if _, err := c.AddNote(tl.ID, "bogus", "text"); err == nil {
+		t.Error("AddNote invalid kind: want error")
+	}
+}
+
+func TestTimelineComment(t *testing.T) {
+	c := newCase(t)
+	idx := memIndex([]string{"Timestamp", "Msg"}, [][]string{{"2026-09-01T08:12:03Z", "x"}})
+	tl, err := c.AddTimeline("t1", idx, "2026-09-11T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.TimelineComment(tl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("fresh comment = %q, want empty", got)
+	}
+
+	if err := c.SetTimelineComment(tl.ID, "working theory: initial access via phishing"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = c.TimelineComment(tl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "working theory: initial access via phishing" {
+		t.Errorf("comment = %q", got)
+	}
+
+	if err := c.SetTimelineComment(tl.ID, "revised theory: lateral movement via RDP"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = c.TimelineComment(tl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "revised theory: lateral movement via RDP" {
+		t.Errorf("comment after overwrite = %q", got)
+	}
+}
+
 func colorOf(defs []model.TagDef, name string) (string, bool) {
 	for _, d := range defs {
 		if d.Name == name {

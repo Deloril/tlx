@@ -191,6 +191,10 @@ func (a *App) showSelectionMenu(pos fyne.Position) {
 		a.refreshTable()
 	})
 	items := []*fyne.MenuItem{tag, comment}
+	if ni := a.noteMenuItems(); len(ni) > 0 {
+		items = append(items, fyne.NewMenuItemSeparator())
+		items = append(items, ni...)
+	}
 	if ts := a.timeWindowMenuItem(); ts != nil {
 		items = append(items, fyne.NewMenuItemSeparator(), ts)
 	}
@@ -402,43 +406,51 @@ func (a *App) cancelInlineEdit() {
 
 // Sidebar.
 
+// toggleSidebar shows or hides the right dock (filter + detail panels).
 func (a *App) toggleSidebar() {
 	a.setSidebar(!a.sidebarVisible)
 }
 
 func (a *App) setSidebar(show bool) {
 	a.sidebarVisible = show
-	if a.scroll == nil || a.split == nil {
+	if a.rightScroll == nil || a.split == nil {
 		return
 	}
 	if show {
-		a.scroll.Show()
-		a.split.SetOffset(0.72)
+		// Take the right pane only if a panel is actually docked; if every panel
+		// has floated out there is nothing to show here.
+		if a.rightDockBox != nil && len(a.rightDockBox.Objects) > 0 {
+			a.rightScroll.Show()
+			a.split.SetOffset(a.rightDockOffset)
+		}
 		if m := a.selectedMaster(); m >= 0 {
 			a.showDetail(m)
 		}
 	} else {
-		a.scroll.Hide()
+		a.rightScroll.Hide()
 		a.split.SetOffset(1.0)
 	}
 	a.split.Refresh()
 }
 
+// toggleViewsSidebar shows or hides the left sidebar (Views/Case/IOC sections).
 func (a *App) toggleViewsSidebar() {
 	a.setViewsSidebar(!a.viewsSidebarVisible)
 }
 
 func (a *App) setViewsSidebar(show bool) {
 	a.viewsSidebarVisible = show
-	if a.viewsPanel == nil || a.outerSplit == nil {
+	if a.leftScroll == nil || a.outerSplit == nil {
 		return
 	}
 	if show {
-		a.refreshViewsSidebar()
-		a.viewsPanel.Show()
+		a.refreshViewsSection()
+		a.refreshCaseSection()
+		a.refreshIOCSection()
+		a.leftScroll.Show()
 		a.outerSplit.SetOffset(viewsSidebarOffset)
 	} else {
-		a.viewsPanel.Hide()
+		a.leftScroll.Hide()
 		a.outerSplit.SetOffset(0.0)
 	}
 	a.outerSplit.Refresh()

@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -205,7 +206,83 @@ func (c *Case) migrate() error {
 	if err := c.addColumnIfMissing("tagged_snapshot", "cells", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
+	// Per-timeline free-text comment, a running note toward a final write-up.
+	if err := c.addColumnIfMissing("timelines", "comment", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// Multiple named IOC lists, replacing the single meta['ioc_list'] value.
+	if _, err := c.db.Exec(`CREATE TABLE IF NOT EXISTS ioc_lists (
+	    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+	    name TEXT NOT NULL UNIQUE,
+	    body TEXT NOT NULL DEFAULT ''
+	);`); err != nil {
+		return fmt.Errorf("create ioc_lists: %w", err)
+	}
+	if err := c.seedDefaultIOCList(); err != nil {
+		return err
+	}
+	// Per-timeline investigator notes, not shared between timelines.
+	if _, err := c.db.Exec(`CREATE TABLE IF NOT EXISTS notes (
+	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	    timeline_id INTEGER NOT NULL,
+	    kind        TEXT NOT NULL,
+	    text        TEXT NOT NULL,
+	    done        INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX IF NOT EXISTS idx_notes_tl ON notes(timeline_id);`); err != nil {
+		return fmt.Errorf("create notes: %w", err)
+	}
 	return nil
+}
+
+// seedDefaultIOCList gives every case a default IOC list named after the case
+// file, carrying forward any body from the old single meta['ioc_list'] value.
+// It runs exactly once, guarded by the meta['ioc_lists_seeded'] flag, so a
+// list the user later deletes is never resurrected on reopen.
+func (c *Case) seedDefaultIOCList() error {
+	var seeded string
+	err := c.db.QueryRow(`SELECT value FROM meta WHERE key='ioc_lists_seeded'`).Scan(&seeded)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		return nil
+	}
+
+	var body string
+	if err := c.db.QueryRow(`SELECT value FROM meta WHERE key='ioc_list'`).Scan(&body); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO ioc_lists(name,body) VALUES(?,?)`,
+		c.caseName(), body); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM meta WHERE key='ioc_list'`); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO meta(key,value) VALUES('ioc_lists_seeded','1')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// caseName derives a default list/case display name from the database file
+// path: its base name without extension, or "case" if that is empty.
+func (c *Case) caseName() string {
+	name := strings.TrimSuffix(filepath.Base(c.path), filepath.Ext(c.path))
+	if name == "" {
+		return "case"
+	}
+	return name
 }
 
 // addColumnIfMissing adds a column to a table unless it is already present.
@@ -316,6 +393,19 @@ func (c *Case) SetColumnNames(id int64, names []string) error {
 	return err
 }
 
+// TimelineComment returns the free-text comment stored for a timeline, or "".
+func (c *Case) TimelineComment(id int64) (string, error) {
+	var text string
+	err := c.db.QueryRow(`SELECT comment FROM timelines WHERE id=?`, id).Scan(&text)
+	return text, err
+}
+
+// SetTimelineComment stores a timeline's free-text comment.
+func (c *Case) SetTimelineComment(id int64, text string) error {
+	_, err := c.db.Exec(`UPDATE timelines SET comment=? WHERE id=?`, text, id)
+	return err
+}
+
 // RemoveTimeline deletes a timeline and all of its annotations.
 func (c *Case) RemoveTimeline(id int64) error {
 	tx, err := c.db.Begin()
@@ -327,6 +417,7 @@ func (c *Case) RemoveTimeline(id int64) error {
 		`DELETE FROM comments WHERE timeline_id=?`,
 		`DELETE FROM edits WHERE timeline_id=?`,
 		`DELETE FROM tagged_snapshot WHERE timeline_id=?`,
+		`DELETE FROM notes WHERE timeline_id=?`,
 		`DELETE FROM timelines WHERE id=?`,
 	} {
 		if _, err := tx.Exec(stmt, id); err != nil {
@@ -561,23 +652,171 @@ func (c *Case) SaveAnnotations(tl TimelineMeta, snap model.SessionSnapshot, rows
 	return tx.Commit()
 }
 
-const iocListKey = "ioc_list"
-
-// IOCList returns the case's saved IOC list (one indicator per line), or "" if
-// none has been set.
-func (c *Case) IOCList() (string, error) {
-	var v string
-	err := c.db.QueryRow(`SELECT value FROM meta WHERE key=?`, iocListKey).Scan(&v)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	return v, err
+// IOCListMeta identifies a named IOC list within a case.
+type IOCListMeta struct {
+	ID   int64
+	Name string
 }
 
-// SetIOCList stores the case's IOC list, replacing any prior value.
-func (c *Case) SetIOCList(text string) error {
-	_, err := c.db.Exec(`INSERT INTO meta(key,value) VALUES(?,?)
-		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, iocListKey, text)
+// IOCLists returns every named IOC list in the case, ordered by name.
+func (c *Case) IOCLists() ([]IOCListMeta, error) {
+	rows, err := c.db.Query(`SELECT id,name FROM ioc_lists ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IOCListMeta
+	for rows.Next() {
+		var m IOCListMeta
+		if err := rows.Scan(&m.ID, &m.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// IOCListBody returns the body text (one indicator per line) of the list with
+// the given id.
+func (c *Case) IOCListBody(id int64) (string, error) {
+	var body string
+	err := c.db.QueryRow(`SELECT body FROM ioc_lists WHERE id=?`, id).Scan(&body)
+	return body, err
+}
+
+// CreateIOCList creates a new empty named list and returns it. The name must be
+// non-empty and unique (case-insensitive); a duplicate or blank name is an error.
+func (c *Case) CreateIOCList(name string) (IOCListMeta, error) {
+	name, err := c.checkIOCListName(name, 0)
+	if err != nil {
+		return IOCListMeta{}, err
+	}
+	res, err := c.db.Exec(`INSERT INTO ioc_lists(name,body) VALUES(?,'')`, name)
+	if err != nil {
+		return IOCListMeta{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return IOCListMeta{}, err
+	}
+	return IOCListMeta{ID: id, Name: name}, nil
+}
+
+// SetIOCListBody replaces the body text of a list.
+func (c *Case) SetIOCListBody(id int64, body string) error {
+	_, err := c.db.Exec(`UPDATE ioc_lists SET body=? WHERE id=?`, body, id)
+	return err
+}
+
+// RenameIOCList changes a list's name (same non-empty/unique rule as CreateIOCList).
+func (c *Case) RenameIOCList(id int64, name string) error {
+	name, err := c.checkIOCListName(name, id)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.Exec(`UPDATE ioc_lists SET name=? WHERE id=?`, name, id)
+	return err
+}
+
+// DeleteIOCList removes a list.
+func (c *Case) DeleteIOCList(id int64) error {
+	_, err := c.db.Exec(`DELETE FROM ioc_lists WHERE id=?`, id)
+	return err
+}
+
+// checkIOCListName trims name, rejects it if blank, and rejects it if it
+// collides case-insensitively with another list's name (excludeID excludes
+// the row being renamed; pass 0 when creating). It returns the trimmed name
+// ready to store.
+func (c *Case) checkIOCListName(name string, excludeID int64) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("ioc list name is required")
+	}
+	var exists int
+	err := c.db.QueryRow(`SELECT 1 FROM ioc_lists WHERE name=? COLLATE NOCASE AND id<>?`,
+		name, excludeID).Scan(&exists)
+	if err == nil {
+		return "", fmt.Errorf("an IOC list named %q already exists", name)
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+	return name, nil
+}
+
+// Note is one investigator note attached to a timeline. Kind is NoteArtifact
+// or NoteTime.
+type Note struct {
+	ID   int64
+	Kind string
+	Text string
+	Done bool
+}
+
+// Note kinds.
+const (
+	NoteArtifact = "artifact"
+	NoteTime     = "time"
+)
+
+// Notes returns a timeline's notes of the given kind, oldest first (insertion order).
+func (c *Case) Notes(timelineID int64, kind string) ([]Note, error) {
+	rows, err := c.db.Query(`SELECT id,kind,text,done FROM notes
+		WHERE timeline_id=? AND kind=? ORDER BY id ASC`, timelineID, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Note
+	for rows.Next() {
+		var n Note
+		var done int
+		if err := rows.Scan(&n.ID, &n.Kind, &n.Text, &done); err != nil {
+			return nil, err
+		}
+		n.Done = done != 0
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// AddNote appends a note to a timeline and returns it (with its new ID). Text is
+// trimmed; empty-after-trim is an error. kind must be NoteArtifact or NoteTime,
+// else error.
+func (c *Case) AddNote(timelineID int64, kind, text string) (Note, error) {
+	if kind != NoteArtifact && kind != NoteTime {
+		return Note{}, fmt.Errorf("invalid note kind %q", kind)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return Note{}, fmt.Errorf("note text is required")
+	}
+	res, err := c.db.Exec(`INSERT INTO notes(timeline_id,kind,text,done) VALUES(?,?,?,0)`,
+		timelineID, kind, text)
+	if err != nil {
+		return Note{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Note{}, err
+	}
+	return Note{ID: id, Kind: kind, Text: text, Done: false}, nil
+}
+
+// SetNoteDone sets a note's done flag.
+func (c *Case) SetNoteDone(id int64, done bool) error {
+	v := 0
+	if done {
+		v = 1
+	}
+	_, err := c.db.Exec(`UPDATE notes SET done=? WHERE id=?`, v, id)
+	return err
+}
+
+// DeleteNote removes a note by id.
+func (c *Case) DeleteNote(id int64) error {
+	_, err := c.db.Exec(`DELETE FROM notes WHERE id=?`, id)
 	return err
 }
 

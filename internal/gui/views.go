@@ -103,21 +103,18 @@ func (a *App) refForTitle(title string) model.ColumnRef {
 	return model.ColAll
 }
 
-// buildViewsSidebar builds the collapsible left pane: a header with a save
-// action over the scrollable list of saved views. The list is (re)filled by
-// refreshViewsSidebar.
-func (a *App) buildViewsSidebar() *fyne.Container {
-	title := widget.NewLabelWithStyle("Saved views", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+// buildViewsSection is the body of the left sidebar's Saved views section: a
+// save action over the list of saved views, filled by refreshViewsSection.
+func (a *App) buildViewsSection() fyne.CanvasObject {
 	saveBtn := widget.NewButtonWithIcon("Save current view…", theme.DocumentSaveIcon(), a.saveCurrentView)
 	a.viewsList = container.NewVBox()
-	a.refreshViewsSidebar()
-	header := container.NewVBox(title, saveBtn, widget.NewSeparator())
-	return container.NewBorder(header, nil, nil, nil, container.NewVScroll(a.viewsList))
+	a.refreshViewsSection()
+	return container.NewVBox(saveBtn, widget.NewSeparator(), a.viewsList)
 }
 
-// refreshViewsSidebar repopulates the saved-views list from preferences. Each
+// refreshViewsSection repopulates the saved-views list from preferences. Each
 // row applies its view on click and has a delete button.
-func (a *App) refreshViewsSidebar() {
+func (a *App) refreshViewsSection() {
 	if a.viewsList == nil {
 		return
 	}
@@ -151,7 +148,7 @@ func (a *App) deleteView(name string) {
 		}
 	}
 	a.storeViews(kept)
-	a.refreshViewsSidebar()
+	a.refreshViewsSection()
 }
 
 // captureView reads the current filter/sort into a preset with the given name.
@@ -217,7 +214,7 @@ func (a *App) saveCurrentView() {
 			views = append(views, p)
 		}
 		a.storeViews(views)
-		a.refreshViewsSidebar()
+		a.refreshViewsSection()
 		if !a.viewsSidebarVisible {
 			a.setViewsSidebar(true) // reveal the pane so the saved view is visible
 		}
@@ -273,7 +270,5 @@ func (a *App) applyView(p viewPreset) {
 		}
 	}
 	a.refreshTable()
-	if a.filterWinShown { // mirror the applied query and conditions in the window
-		a.showFilterWindow()
-	}
+	a.rebuildFilterPanel() // mirror the applied query and conditions in the panel
 }

@@ -65,7 +65,7 @@ func (a *App) tagFilterHeaderLabel() string {
 // checklist.
 func (a *App) tagFilterButton() *widget.Button {
 	btn := widget.NewButton(a.tagFilterLabel(), nil)
-	btn.OnTapped = func() { a.showTagFilterPopup(btn, a.filterWin.Canvas(), a.tagFilterLabel) }
+	btn.OnTapped = func() { a.showTagFilterPopup(btn, a.filterPanel.canvas(), a.tagFilterLabel) }
 	return btn
 }
 

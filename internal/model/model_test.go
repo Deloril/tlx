@@ -432,6 +432,35 @@ func TestExport(t *testing.T) {
 	}
 }
 
+// A non-blank timeline comment heads the export with a two-cell row before the
+// header; a blank comment adds no row.
+func TestExportWithComment(t *testing.T) {
+	idx := openT(t, "host,event\nalpha,login\n")
+	s := NewSession(idx.Path())
+	v := NewView(idx, s)
+
+	dest := filepath.Join(t.TempDir(), "out.csv")
+	if err := ExportOmittingWithComment(v, s, dest, nil, "saw psexec at 03:14"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(dest)
+	got := string(data)
+	want := "Timeline comments:,saw psexec at 03:14\nhost,event,Tags,Comment\nalpha,login,,\n"
+	if got != want {
+		t.Fatalf("export =\n%q\nwant\n%q", got, want)
+	}
+
+	// A blank comment writes no prelude row.
+	dest2 := filepath.Join(t.TempDir(), "out2.csv")
+	if err := ExportOmittingWithComment(v, s, dest2, nil, "   "); err != nil {
+		t.Fatal(err)
+	}
+	data2, _ := os.ReadFile(dest2)
+	if got := string(data2); got != "host,event,Tags,Comment\nalpha,login,,\n" {
+		t.Fatalf("blank-comment export =\n%q", got)
+	}
+}
+
 // When a source CSV already has Tags/Comment columns that were adopted as the
 // session's annotations, ExportOmitting drops them so the appended Tags/Comment
 // columns do not duplicate the source ones.

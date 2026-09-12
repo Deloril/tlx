@@ -67,25 +67,48 @@ type App struct {
 	// Empty means fall back to the index headers.
 	colNames []string
 
-	table  *bigTable
-	detail *fyne.Container
-	scroll *container.Scroll
-	split  *container.Split // table | detail
+	table *bigTable
+	split *container.Split // table | right dock
 
-	// Standalone, non-modal filter window (see filterwin.go). filterConds holds
-	// the structured per-column condition rows; combineSel picks AND/OR.
-	filterWin      fyne.Window
-	filterWinShown bool
+	// Right dock: collapsible, floatable panels (see dock.go) stacked in a
+	// scrollable column. filterPanel holds the query/conditions UI (was a
+	// separate window); detailPanel holds the selected-row detail. rightPanels
+	// is the display order; rightDockBox is the VBox of docked cards.
+	filterPanel     *dockPanel
+	detailPanel     *dockPanel
+	notesPanel      *dockPanel
+	commentsPanel   *dockPanel
+	rightPanels     []*dockPanel
+	rightDockBox    *fyne.Container
+	rightScroll     *container.Scroll
+	rightDockOffset float64
+	detail          *fyne.Container // detail panel body, filled by showDetail
+
+	// Investigator's notes (per-timeline Artifacts/Times) and the timeline
+	// comments field, both in the right dock.
+	notesArtifactsBox *fyne.Container
+	notesTimesBox     *fyne.Container
+	commentEntry      *widget.Entry
+	suppressComment   bool // set while loading the comment field, to swallow OnChanged
+
+	// Filter UI state. filterConds holds the structured per-column condition
+	// rows; combineSel picks AND/OR.
 	filterConds    *fyne.Container
 	filterRows     []*filterRow
 	combineSel     *widget.RadioGroup
 	suppressFilter bool // set while resetting filter widgets, to swallow callbacks
 
-	// Left sidebar listing saved views, and the split that holds it beside the
-	// main content. viewsList is the repopulated list of view rows.
-	outerSplit *container.Split // viewsPanel | split
-	viewsPanel *fyne.Container
-	viewsList  *fyne.Container
+	// Left sidebar: three collapsible sections (Views, Case, IOC lists) stacked
+	// in a scrollable column, held in outerSplit beside the main content.
+	outerSplit *container.Split // left sidebar | split
+	leftBox    *fyne.Container  // VBox of the three section cards
+	leftScroll *container.Scroll
+	viewsPanel *dockPanel
+	casePanel  *dockPanel
+	iocPanel   *dockPanel
+	viewsList  *fyne.Container // repopulated list of saved-view rows
+	caseList   *fyne.Container // repopulated case/timeline controls
+	iocListBox *fyne.Container // repopulated IOC-list rows
 
 	search     *widget.Entry
 	modeSelect *widget.Select
@@ -110,8 +133,8 @@ type App struct {
 	hoverRow   int
 	hoverCol   int // column last under the pointer, for column-aware context actions
 
-	sidebarVisible      bool // right detail pane
-	viewsSidebarVisible bool // left saved-views pane
+	sidebarVisible      bool // right dock (filter + detail panels)
+	viewsSidebarVisible bool // left sidebar (views + case + IOC sections)
 	themeVariant        fyne.ThemeVariant
 
 	// Per-column filter conditions, kept so the search box and column filter
@@ -127,11 +150,6 @@ type App struct {
 	// window). A row is kept if it carries any of them (OR). Empty means the tag
 	// dropdown imposes no filter.
 	tagFilter map[string]bool
-
-	// iocList holds the IOC list for a standalone (non-case) timeline. Inside a
-	// case the list lives on the case instead. Loaded from and saved to a
-	// per-file preference (see ioc.go).
-	iocList string
 
 	// showFilters toggles the per-column filter boxes under the headers. Off by
 	// default: headers are a single row and data rows stay compact. On: each
@@ -293,15 +311,14 @@ func (a *App) rebuildVisible() {
 func (a *App) buildUI() {
 	a.table = a.newTable()
 
-	a.detail = container.NewVBox(widget.NewLabel("Select a row to see details."))
-	a.scroll = container.NewVScroll(a.detail)
-	a.scroll.SetMinSize(fyne.NewSize(340, 100))
+	a.rightDockOffset = 0.72
+	a.buildRightDock()
+	a.buildLeftSidebar()
 
-	a.split = container.NewHSplit(a.table, a.scroll)
-	a.split.Offset = 0.72
+	a.split = container.NewHSplit(a.table, a.rightScroll)
+	a.split.Offset = a.rightDockOffset
 
-	a.viewsPanel = a.buildViewsSidebar()
-	a.outerSplit = container.NewHSplit(a.viewsPanel, a.split)
+	a.outerSplit = container.NewHSplit(a.leftScroll, a.split)
 	a.outerSplit.Offset = viewsSidebarOffset
 
 	body := container.NewBorder(a.buildToolbar(), a.buildStatusBar(), nil, nil, a.outerSplit)
@@ -310,14 +327,105 @@ func (a *App) buildUI() {
 	a.win.SetContent(content)
 	a.win.Resize(fyne.NewSize(1280, 760))
 	if !a.viewsSidebarVisible {
-		a.viewsPanel.Hide()
+		a.leftScroll.Hide()
 		a.outerSplit.SetOffset(0.0)
 	}
 	if !a.sidebarVisible {
-		a.scroll.Hide()
+		a.rightScroll.Hide()
 		a.split.SetOffset(1.0)
 	}
 	a.refreshStatus()
+}
+
+// buildRightDock creates the Filter and Details panels and the scrollable
+// column that stacks whichever of them are docked.
+func (a *App) buildRightDock() {
+	// Close any float windows left over from a previous file before rebuilding
+	// the panels, so a reload doesn't orphan them.
+	for _, p := range a.rightPanels {
+		if p != nil && p.win != nil {
+			p.win.SetContent(container.NewWithoutLayout())
+			p.win.Close()
+			p.win = nil
+		}
+	}
+	a.detail = container.NewVBox(widget.NewLabel("Select a row to see details."))
+
+	a.filterPanel = newDockPanel(a, "Filter", true)
+	a.filterPanel.onChange = a.refreshRightDock
+	a.filterPanel.setBody(a.buildFilterContent())
+
+	a.detailPanel = newDockPanel(a, "Details", true)
+	a.detailPanel.onChange = a.refreshRightDock
+	a.detailPanel.setBody(a.detail)
+
+	a.notesPanel = newDockPanel(a, "Investigator's notes", true)
+	a.notesPanel.onChange = a.refreshRightDock
+	a.notesPanel.setBody(a.buildNotesContent())
+
+	a.commentsPanel = newDockPanel(a, "Timeline comments", true)
+	a.commentsPanel.onChange = a.refreshRightDock
+	a.commentsPanel.setBody(a.buildCommentsContent())
+
+	a.rightPanels = []*dockPanel{a.filterPanel, a.detailPanel, a.notesPanel, a.commentsPanel}
+	a.rightDockBox = container.NewVBox()
+	a.rightScroll = container.NewVScroll(a.rightDockBox)
+	a.rightScroll.SetMinSize(fyne.NewSize(340, 100))
+	a.refreshRightDock()
+}
+
+// refreshRightDock rebuilds the docked-card list from the panels that are not
+// floating, and reveals or hides the right pane so it never shows as an empty
+// strip when every panel has floated out.
+func (a *App) refreshRightDock() {
+	if a.rightDockBox == nil {
+		return
+	}
+	a.rightDockBox.Objects = nil
+	for _, p := range a.rightPanels {
+		if !p.floating {
+			a.rightDockBox.Objects = append(a.rightDockBox.Objects, p.root)
+		}
+	}
+	a.rightDockBox.Refresh()
+	if a.split == nil {
+		return
+	}
+	if len(a.rightDockBox.Objects) == 0 { // all floated out
+		a.rightScroll.Hide()
+		a.split.SetOffset(1.0)
+	} else if a.sidebarVisible {
+		a.rightScroll.Show()
+		a.split.SetOffset(a.rightDockOffset)
+	}
+	a.split.Refresh()
+}
+
+// buildLeftSidebar creates the three collapsible sections (Views, Case, IOC
+// lists) and the scrollable column that stacks them.
+func (a *App) buildLeftSidebar() {
+	a.viewsPanel = newDockPanel(a, "Saved views", false)
+	a.viewsPanel.onChange = a.refreshLeftSidebar
+	a.viewsPanel.setBody(a.buildViewsSection())
+
+	a.casePanel = newDockPanel(a, "Case", false)
+	a.casePanel.onChange = a.refreshLeftSidebar
+	a.casePanel.setBody(a.buildCaseSection())
+
+	a.iocPanel = newDockPanel(a, "IOC lists", false)
+	a.iocPanel.onChange = a.refreshLeftSidebar
+	a.iocPanel.setBody(a.buildIOCSection())
+
+	a.leftBox = container.NewVBox(a.viewsPanel.root, a.casePanel.root, a.iocPanel.root)
+	a.leftScroll = container.NewVScroll(a.leftBox)
+}
+
+// refreshLeftSidebar re-lays-out the left column after a section collapses or
+// its contents change.
+func (a *App) refreshLeftSidebar() {
+	if a.leftBox != nil {
+		a.leftBox.Refresh()
+	}
 }
 
 // reloadWith swaps the open file, keeping the same window and shortcuts.
@@ -349,7 +457,6 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
 	a.win.SetTitle(a.windowTitle())
-	a.loadStandaloneIOCList()
 	a.buildColumns()
 	a.buildUI()
 	a.modeSelect.SetSelected(a.sess.Mode().String())
@@ -357,7 +464,7 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 }
 
 // resetFilterState clears the active filter and its widgets without triggering
-// their change callbacks, then rebuilds the filter window if it is open.
+// their change callbacks, then rebuilds the docked filter panel.
 func (a *App) resetFilterState() {
 	a.suppressFilter = true
 	a.conds = nil
@@ -375,9 +482,7 @@ func (a *App) resetFilterState() {
 		a.caseChk.SetChecked(false)
 	}
 	a.suppressFilter = false
-	if a.filterWinShown {
-		a.showFilterWindow()
-	}
+	a.rebuildFilterPanel() // reflect the cleared conditions in the docked filter UI
 }
 
 // windowTitle reflects the current context: master view, a named timeline in an
@@ -410,12 +515,12 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 	tagBtn := widget.NewButtonWithIcon("Tag", theme.ContentAddIcon(), a.tagSelected)
 	commentBtn := widget.NewButtonWithIcon("Comment", theme.MailComposeIcon(), a.commentSelected)
 	viewsBtn := widget.NewButtonWithIcon("Views", theme.ListIcon(), a.toggleViewsSidebar)
-	filterBtn := widget.NewButtonWithIcon("Filter", theme.SearchIcon(), a.toggleFilterWindow)
+	filterBtn := widget.NewButtonWithIcon("Filter", theme.SearchIcon(), a.revealFilterPanel)
 	clearBtn := widget.NewButtonWithIcon("Clear filters", theme.ContentClearIcon(), a.clearFilter)
 	a.filterRowBtn = widget.NewButtonWithIcon("Filter row", theme.VisibilityIcon(), a.toggleFilterRow)
 	a.updateFilterRowButton()
 	colsBtn := widget.NewButtonWithIcon("Columns", theme.ViewFullScreenIcon(), a.columnPicker)
-	sidebarBtn := widget.NewButtonWithIcon("Sidebar", theme.MenuIcon(), a.toggleSidebar)
+	sidebarBtn := widget.NewButtonWithIcon("Panels", theme.MenuIcon(), a.toggleSidebar)
 	a.themeBtn = widget.NewButtonWithIcon("", theme.ColorPaletteIcon(), a.toggleTheme)
 	a.updateThemeButton()
 	helpBtn := widget.NewButtonWithIcon("Help", theme.HelpIcon(), a.showHelp)

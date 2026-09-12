@@ -94,9 +94,7 @@ func (a *App) clearFilter() {
 	a.view.Apply(model.FilterSpec{})
 	a.clearSelection()
 	a.refreshTable()
-	if a.filterWinShown { // rebuild the window's condition rows to the empty state
-		a.showFilterWindow()
-	}
+	a.rebuildFilterPanel() // rebuild the docked filter panel to the empty state
 }
 
 // Tagging.
@@ -456,7 +454,7 @@ func annotatedPath(src string) string {
 
 func (a *App) export() {
 	a.showSaveFile("", func(path string) {
-		if err := model.ExportOmitting(a.view, a.sess, path, a.omitCols()); err != nil {
+		if err := model.ExportOmittingWithComment(a.view, a.sess, path, a.omitCols(), a.currentTimelineComment()); err != nil {
 			a.showError(err)
 			return
 		}
@@ -511,8 +509,10 @@ func (a *App) onClose() {
 	}
 	a.autosaveMu.Unlock()
 	a.confirmIfDirty(func() {
-		if a.filterWin != nil {
-			a.filterWin.Close()
+		for _, p := range a.rightPanels {
+			if p != nil && p.win != nil {
+				p.win.Close()
+			}
 		}
 		if a.idx != nil {
 			a.idx.Close()
@@ -661,11 +661,11 @@ Modes
   World-write    also edit any cell value
 
 Keyboard
-  /        open filter window  Ctrl+F  open filter window
+  /        open filter panel   Ctrl+F  open filter panel
   Enter    apply filter        Esc     clear filter
   F3       find next match     Ctrl+G  go to row
   Ctrl+S   save                Ctrl+E  export view
-  Ctrl+B   toggle detail pane  Ctrl+L  toggle views sidebar
+  Ctrl+B   toggle right dock   Ctrl+L  toggle left sidebar
   t        tag selected row    c       comment row
   Ctrl+Shift+F  toggle per-column filter row
   Click a header to sort; click again to reverse. The Filter row button
@@ -680,6 +680,9 @@ Selecting rows
   Right-click  menu to tag or comment every selected row at once.
                Right-click a timestamp cell for "Filter ±5 min around
                this time", which narrows to that column within 5 minutes.
+               A timestamp cell also offers "Add time to notes"; any other
+               cell offers "Add … as artifact", both feeding the
+               Investigator's notes panel.
 
 Tags and colours
   Rows are highlighted by their tag's colour; Bad is red, Suspicious
@@ -695,13 +698,14 @@ Editing cells
   or click away commits, Esc cancels.
 
 Filtering
-  Filtering lives in a separate window (the Filter button, / or Ctrl+F). It
-  is non-modal: apply a filter, then keep working the grid and refine it as
-  you find things, without closing the window. Drag it to a second monitor
-  if you like. The window has two halves.
+  Filtering lives in the Filter panel of the right dock (the Filter button,
+  / or Ctrl+F). Apply a filter, then keep working the grid and refine it as
+  you find things. Pop the panel out to its own window with the panel's
+  float button if you want it on a second monitor; "Dock to right" (or
+  closing the window) puts it back.
 
-  Bottom half: a freetext query. The simplest is a word, which matches any
-  column. You can also write field comparisons and combine them:
+  A freetext query. The simplest is a word, which matches any column. You can
+  also write field comparisons and combine them:
 
     Summary=derp                 Summary contains "derp"
     Host!=ws1                    Host does not contain "ws1"
@@ -732,10 +736,10 @@ Filtering
   Durations use s, m, h, d, w (second, minute, hour, day, week) and combine,
   e.g. 1d12h. now and time both mean the current time.
 
-  Top half: structured per-column conditions, each with multiple values and
-  its own regex/all-values options, combined with AND or OR. The structured
-  conditions and the freetext query combine together. Apply commits both;
-  Enter in the query box does the same. The "#" column keeps each row's
+  Structured per-column conditions sit above the query, each with multiple
+  values and its own regex/all-values options, combined with AND or OR. The
+  structured conditions and the freetext query combine together. Apply commits
+  both; Enter in the query box does the same. The "#" column keeps each row's
   original CSV line number even after filtering or sorting.
 
   Tags drop-down: next to the query checkboxes, the Tags button opens a
@@ -747,7 +751,7 @@ Filtering
   filter box under each header's sort button. Type a substring and press Enter
   to narrow that one column. A lone * keeps only rows where that column is
   non-empty. Under the Tags column the box is a drop-down instead: the same tag
-  checklist as the filter window. These boxes combine (AND) with the query and
+  checklist as the Filter panel. These boxes combine (AND) with the query and
   structured conditions, and matches are highlighted in the grid and hover
   tooltip. The filter row is off by default because it makes the grid rows
   taller.
@@ -777,12 +781,17 @@ Cases (File and Case menus)
   master view shows those merged columns plus Time, Timeline, Tags and
   Comment.
 
-IOC lists (File menu)
-  File > IOC list keeps a list of indicators, one per line. Save & run
-  matches them against the open timeline and tags every hit ioc-hit;
-  File > Run IOCs re-runs the saved list. For a standalone timeline the
-  list is saved per file; inside a case it is the case's list and also
-  runs automatically whenever you import a new timeline.
+IOC lists (left sidebar, or File > IOC lists)
+  A timeline can carry several named IOC lists, each a set of indicators one
+  per line. The IOC lists section of the left sidebar lists them: click a
+  name to edit its indicators, the play button to run it, the trash to delete
+  it. New list adds one. Every case starts with a default list named after
+  the case. For a standalone timeline the lists are saved per file; inside a
+  case they belong to the case and run automatically whenever you import a new
+  timeline. Run all runs every list at once.
+
+  Save & run matches a list against the open timeline and tags every hit with
+  that list's own tag, ioc:<list name>, so the grid shows which list matched.
 
   Each line is one of a plain string (matched against every column), a regex
   wrapped in /…/, or a filter query. A filter query starts with a backtick and
@@ -796,6 +805,27 @@ IOC lists (File menu)
   Blank lines and lines starting with # are ignored. Matching is
   case-insensitive. Lines that fail to compile are listed after a run; the
   rest still apply.
+
+Right-hand dock (toggle with Ctrl+B or the Panels button)
+  The right side stacks collapsible panels: Filter, Details, Investigator's
+  notes and Timeline comments. Tap a panel's title to collapse or expand it.
+  The float button on a panel pops it out into its own window; "Dock to
+  right" (or closing the window) returns it. If every panel is floated out
+  the right dock hides itself.
+
+Investigator's notes (right dock)
+  Two per-timeline lists, Artifacts and Times, for things worth coming back
+  to. Right-click a timestamp cell and choose "Add time to notes"; right-click
+  any other cell and choose "Add … as artifact". Each entry has a checkbox
+  that strikes it through once you're done with it, a search button to filter
+  the view to rows containing it, a delete button, and — inside a case — a
+  plus button to copy it into the case's default IOC list. These notes belong
+  to one timeline and are not shared with the others.
+
+Timeline comments (right dock)
+  A free-text field per timeline for running notes towards a write-up, saved
+  as you type. When it is not blank, an export writes it as the first row of
+  the CSV ("Timeline comments:" then the text) before the header and events.
 
 Saved views (left sidebar, toggle with Ctrl+L or the Views button)
   Save current view stores the filter query, column conditions, sort and

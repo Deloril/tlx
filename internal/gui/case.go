@@ -27,8 +27,8 @@ func (a *App) buildMainMenu() *fyne.MainMenu {
 		fyne.NewMenuItem("New case…", a.newCase),
 		fyne.NewMenuItem("Open case…", a.openCase),
 		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("IOC list…", a.showIOCList),
-		fyne.NewMenuItem("Run IOCs on this timeline", func() { a.runIOCs(false) }),
+		fyne.NewMenuItem("IOC lists…", a.revealIOCSection),
+		fyne.NewMenuItem("Run all IOCs on this timeline", func() { a.runAllIOCLists(false) }),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Save", a.save),
 		fyne.NewMenuItem("Export view…", a.export),
@@ -86,10 +86,89 @@ func (a *App) caseMenuItems() []*fyne.MenuItem {
 	return items
 }
 
-// rebuildCaseMenu refreshes the whole menu bar so the Case submenu
-// reflects the current case and open timeline.
+// rebuildCaseMenu refreshes the menu bar and the left-sidebar Case and IOC
+// sections so all three reflect the current case and open timeline.
 func (a *App) rebuildCaseMenu() {
 	a.win.SetMainMenu(a.buildMainMenu())
+	a.refreshCaseSection()
+	a.refreshIOCSection()
+}
+
+// caseDisplayName is the case's name for display: its database file's base name
+// without extension (e.g. .../foo/foo.tlxdb -> "foo").
+func caseDisplayName(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// buildCaseSection is the body of the left sidebar's Case section, filled by
+// refreshCaseSection.
+func (a *App) buildCaseSection() fyne.CanvasObject {
+	a.caseList = container.NewVBox()
+	a.refreshCaseSection()
+	return a.caseList
+}
+
+// refreshCaseSection rebuilds the Case section for the current state: create/open
+// controls with no case, or the master view, an add action and every timeline
+// once a case is open. The open timeline (or the master view) is marked.
+func (a *App) refreshCaseSection() {
+	if a.caseList == nil {
+		return
+	}
+	a.caseList.Objects = nil
+	add := func(o fyne.CanvasObject) { a.caseList.Add(o) }
+
+	if a.cse == nil {
+		add(widget.NewButtonWithIcon("New case…", theme.ContentAddIcon(), a.newCase))
+		add(widget.NewButtonWithIcon("Open case…", theme.FolderOpenIcon(), a.openCase))
+		if a.idx != nil && !a.masterMode {
+			add(widget.NewButtonWithIcon("Create case with this timeline…", theme.StorageIcon(), a.createCaseWithCurrent))
+		} else {
+			hint := widget.NewLabel("Open a case to work across several timelines.")
+			hint.Wrapping = fyne.TextWrapWord
+			add(hint)
+		}
+		a.caseList.Refresh()
+		return
+	}
+
+	add(widget.NewLabelWithStyle(caseDisplayName(a.cse.Path()), fyne.TextAlignLeading, fyne.TextStyle{Italic: true}))
+	master := widget.NewButton("★ Master timeline", a.showMasterTimeline)
+	master.Alignment = widget.ButtonAlignLeading
+	if a.masterMode {
+		master.Importance = widget.HighImportance
+	}
+	add(master)
+	add(widget.NewButtonWithIcon("Add timeline…", theme.ContentAddIcon(), a.addTimelineToCase))
+	add(widget.NewSeparator())
+
+	tls, err := a.cse.Timelines()
+	if err != nil {
+		a.showError(err)
+	}
+	if len(tls) == 0 {
+		add(widget.NewLabel("(no timelines yet)"))
+	}
+	for _, tl := range tls {
+		tl := tl
+		current := a.curTimeline != nil && a.curTimeline.ID == tl.ID && !a.masterMode
+		label := tl.Name
+		if current {
+			label = "● " + label
+		}
+		btn := widget.NewButton(label, func() { a.openTimeline(tl) })
+		btn.Alignment = widget.ButtonAlignLeading
+		if current {
+			btn.Importance = widget.HighImportance
+		}
+		add(btn)
+	}
+	if a.curTimeline != nil && !a.masterMode {
+		add(widget.NewSeparator())
+		add(widget.NewButtonWithIcon("Rename columns…", theme.DocumentCreateIcon(), a.renameColumns))
+	}
+	a.caseList.Refresh()
 }
 
 // clearView tears down any open file/timeline and shows a placeholder. Used when
@@ -108,7 +187,6 @@ func (a *App) clearView() {
 	a.anchorView, a.hoverRow, a.hoverCol = -1, -1, -1
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
-	a.hideFilterWindow() // the filter window acts on a.view, which is now nil
 
 	msg := widget.NewLabel("Add a timeline from the Case menu to begin.")
 	add := widget.NewButtonWithIcon("Add timeline…", theme.ContentAddIcon(), a.addTimelineToCase)
@@ -311,8 +389,8 @@ func (a *App) addTimelineToCase() {
 				}
 				a.refreshTable()
 			}
-			// Match the case's IOC list against the new timeline.
-			a.runIOCs(true)
+			// Match the case's IOC lists against the new timeline.
+			a.runAllIOCLists(true)
 		})
 	})
 }

@@ -32,7 +32,9 @@ Tags, comments and edits are stored in a sidecar file next to the source
 (`<file>.tlx.json`); inside a case they go to the case database instead. They
 autosave shortly after each change, so nothing needs saving by hand. The
 original CSV is never modified. Export writes the current view to a new CSV with
-`Tags` and `Comment` columns appended and any edits applied.
+`Tags` and `Comment` columns appended and any edits applied; if the timeline has
+a comment (see below) it heads the file as a `Timeline comments:` row before the
+header.
 
 ## How it handles large files
 
@@ -50,12 +52,13 @@ store, so this is the deliberate trade for low memory and instant open.
 ## Keyboard and mouse
 
 Everything is reachable both ways. Click a column header to sort, click again to
-reverse. Click a row to load it into the detail pane on the right.
+reverse. Click a row to load it into the Details panel of the right dock.
 
     /        focus the filter box      Ctrl+F  focus the filter box
     Enter    apply filter              Esc     clear filter
     F3       find next match           Ctrl+G  go to row number
     Ctrl+S   save annotations          Ctrl+E  export current view
+    Ctrl+B   toggle right dock         Ctrl+L  toggle left sidebar
     t        tag selected row          c       comment selected row
 
 The filter box takes a query. A bare word matches any column; `Field=value`
@@ -70,11 +73,13 @@ by default because it makes the grid rows taller. The Clear filters button (or
 Esc) drops everything at once. "Tagged only" limits the view to annotated rows.
 Whatever the filter matches is highlighted in the grid and in the hover tooltip.
 
-The filter window's Tags button opens the same checklist of every tag; tick one
+The Filter panel's Tags button opens the same checklist of every tag; tick one
 or more to keep rows carrying any of them, without typing `tag=`.
 
 Right-click a cell holding a timestamp for "Filter ±5 min around this time",
-which narrows that column to a 5-minute window either side of the value.
+which narrows that column to a 5-minute window either side of the value. The
+same menu adds a timestamp to the notes' Times list, or any other cell to the
+Artifacts list (see below).
 
 Timestamp columns compare with `before`, `after` and `between`, e.g.
 `Timestamp between 2020 and 2021` or `Timestamp after now - 7d`. A bare year,
@@ -93,15 +98,36 @@ and semicolons.
 
 ## IOC lists
 
-A list of indicators, one per line, matched against the open timeline; hits are
-tagged `ioc-hit`. Edit and run it from File > IOC list, or re-run with File >
-Run IOCs. A standalone timeline keeps its own list (saved per file); inside a
-case the list belongs to the case and also runs against each new timeline as it
-is imported. A line is a plain string
+A timeline can carry several named IOC lists, each a set of indicators one per
+line matched against the open timeline; hits are tagged `ioc:<list name>`, so
+the grid shows which list matched a row. The IOC lists section of the left
+sidebar lists them — click a name to edit its indicators, the play button to
+run it, the trash to delete it, New list to add one. Every case starts with a
+default list named after the case. A standalone timeline keeps its lists per
+file; inside a case they belong to the case and run against each new timeline as
+it is imported (Run all runs every list at once). A line is a plain string
 (matched against every column), a `/regex/`, or — with a leading backtick — a
 filter query using the syntax above, e.g.
 `` `Summary=psexec AND Timestamp between 2024 and 2025 ``. Blank lines and lines
 starting with `#` are ignored; matching is case-insensitive.
+
+## Panels: notes and comments
+
+The right side of the window is a dock of collapsible panels — Filter, Details,
+Investigator's notes and Timeline comments. Tap a title to collapse or expand a
+panel; the float button pops one out into its own window, and "Dock to right"
+(or closing that window) returns it. The left sidebar holds Saved views, Case
+and IOC lists, each collapsible the same way.
+
+**Investigator's notes** are two per-timeline lists, Artifacts and Times, filled
+by right-clicking cells in the grid. Each entry has a checkbox that strikes it
+through when you're done, a button to filter the view to rows containing it, a
+delete button, and — inside a case — a button to copy it into the case's default
+IOC list. The lists belong to one timeline and are not shared with the others.
+
+**Timeline comments** is a free-text field per timeline for running notes
+towards a write-up, saved as you type. When it is not blank it heads an export
+as the first CSV row.
 
 ## Running
 

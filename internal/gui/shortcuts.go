@@ -19,7 +19,7 @@ func (a *App) registerShortcuts() {
 			})
 	}
 
-	add(fyne.KeyF, fyne.KeyModifierControl, a.focusFilterWindow)
+	add(fyne.KeyF, fyne.KeyModifierControl, a.revealFilterPanel)
 	add(fyne.KeyF, fyne.KeyModifierControl|fyne.KeyModifierShift, a.toggleFilterRow)
 	add(fyne.KeyG, fyne.KeyModifierControl, a.gotoLine)
 	add(fyne.KeyS, fyne.KeyModifierControl, a.save)
@@ -38,7 +38,7 @@ func (a *App) registerShortcuts() {
 			// vim-style: open the filter window and focus its query box. The
 			// guard above means this only fires when no text field in the main
 			// window is focused, so typing / into a cell still works normally.
-			a.focusFilterWindow()
+			a.revealFilterPanel()
 		case fyne.KeyF3:
 			a.findNext()
 		case fyne.KeyEscape:

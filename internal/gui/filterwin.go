@@ -11,66 +11,41 @@ import (
 	"tlx/internal/model"
 )
 
-// The filter window is a separate, non-modal OS window that can be dragged
-// outside the main window. It splits into structured per-column conditions on
-// top and the freetext query with its checkboxes below. Applying updates the
-// main grid and leaves the window open, so an examiner can refine a filter
-// against what they just found without reopening it.
+// The filter UI is a panel in the right dock (see dock.go): structured
+// per-column conditions on top, the freetext query and its checkboxes below.
+// Applying updates the grid without dismissing the panel, so an examiner can
+// refine a filter against what they just found. The panel can float out into
+// its own window and dock back, like every right-hand panel.
 
-func (a *App) toggleFilterWindow() {
-	if a.idx == nil {
+// revealFilterPanel brings the filter into view and focuses the query box, so
+// the toolbar button, / and Ctrl+F all drop straight into typing a filter.
+func (a *App) revealFilterPanel() {
+	if a.idx == nil || a.filterPanel == nil {
 		return
 	}
-	if a.filterWinShown {
-		a.hideFilterWindow()
+	if !a.sidebarVisible && !a.filterPanel.floating {
+		a.setSidebar(true)
+	}
+	a.filterPanel.focus() // expands if docked, raises the window if floating
+	if a.search != nil {
+		a.filterPanel.canvas().Focus(a.search)
+	}
+}
+
+// rebuildFilterPanel regenerates the filter content so its column choices track
+// the current file and its condition rows match the active conditions. The
+// query box and checkboxes are persistent widgets reparented into the new
+// content (see buildFilterWidgets).
+func (a *App) rebuildFilterPanel() {
+	if a.filterPanel == nil {
 		return
 	}
-	a.showFilterWindow()
+	a.filterPanel.setBody(a.buildFilterContent())
 }
 
-func (a *App) hideFilterWindow() {
-	if a.filterWin != nil {
-		a.filterWin.Hide()
-	}
-	a.filterWinShown = false
-	// Drop the row widgets so commitFilter can't read stale rows while hidden;
-	// they are rebuilt on the next show.
-	a.filterRows = nil
-}
-
-// focusFilterWindow shows the window (building it if needed) and puts the caret
-// in the query box, so / and Ctrl+F drop straight into typing a filter. When the
-// window is already open it just refocuses, so any unapplied edits survive.
-func (a *App) focusFilterWindow() {
-	if a.idx == nil {
-		return
-	}
-	if a.filterWinShown {
-		a.filterWin.RequestFocus()
-	} else {
-		a.showFilterWindow()
-	}
-	if a.filterWin != nil && a.search != nil {
-		a.filterWin.Canvas().Focus(a.search)
-	}
-}
-
-func (a *App) showFilterWindow() {
-	if a.filterWin == nil {
-		a.filterWin = a.fyne.NewWindow("Filter — Timeline explorer")
-		a.filterWin.Resize(fyne.NewSize(560, 600))
-		// Closing hides and reuses the window rather than destroying it, so its
-		// size and position survive the next open.
-		a.filterWin.SetCloseIntercept(a.hideFilterWindow)
-	}
-	a.filterWin.SetContent(a.buildFilterContent())
-	a.filterWin.Show()
-	a.filterWinShown = true
-}
-
-// buildFilterContent lays out the two halves. It is rebuilt on each show so the
-// column choices track the current file; the query box and checkboxes are
-// persistent widgets (see buildFilterWidgets) reparented into the new content.
+// buildFilterContent lays out the filter panel as a single scrollable column:
+// the column conditions, then the query and its controls. A VBox (rather than a
+// split) suits both the narrow docked pane and the float window.
 func (a *App) buildFilterContent() fyne.CanvasObject {
 	a.filterConds = container.NewVBox()
 	a.filterRows = nil
@@ -92,26 +67,21 @@ func (a *App) buildFilterContent() fyne.CanvasObject {
 	a.combineSel.Horizontal = true
 
 	addBtn := widget.NewButtonWithIcon("Add condition", theme.ContentAddIcon(), func() { a.addFilterRow(nil) })
-	topHeader := container.NewVBox(
-		widget.NewLabelWithStyle("Column conditions", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		a.combineSel,
-		widget.NewSeparator(),
-	)
-	top := container.NewBorder(topHeader, addBtn, nil, nil, container.NewVScroll(a.filterConds))
-
 	applyBtn := widget.NewButtonWithIcon("Apply", theme.ConfirmIcon(), a.commitFilter)
 	applyBtn.Importance = widget.HighImportance
 	clearBtn := widget.NewButtonWithIcon("Clear all", theme.ContentClearIcon(), a.clearFilter)
-	bottom := container.NewVBox(
+
+	return container.NewVBox(
+		widget.NewLabelWithStyle("Column conditions", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		a.combineSel,
+		a.filterConds,
+		addBtn,
+		widget.NewSeparator(),
 		widget.NewLabelWithStyle("Query", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		a.search,
 		container.NewHBox(a.caseChk, a.taggedChk, a.tagFilterButton()),
 		container.NewHBox(applyBtn, clearBtn),
 	)
-
-	split := container.NewVSplit(top, bottom)
-	split.Offset = 0.6
-	return split
 }
 
 // addFilterRow appends one structured condition row to the conditions box,
