@@ -216,6 +216,26 @@ func (a *App) setSidebar(show bool) {
 	a.split.Refresh()
 }
 
+func (a *App) toggleViewsSidebar() {
+	a.setViewsSidebar(!a.viewsSidebarVisible)
+}
+
+func (a *App) setViewsSidebar(show bool) {
+	a.viewsSidebarVisible = show
+	if a.viewsPanel == nil || a.outerSplit == nil {
+		return
+	}
+	if show {
+		a.refreshViewsSidebar()
+		a.viewsPanel.Show()
+		a.outerSplit.SetOffset(viewsSidebarOffset)
+	} else {
+		a.viewsPanel.Hide()
+		a.outerSplit.SetOffset(0.0)
+	}
+	a.outerSplit.Refresh()
+}
+
 // Hover tooltip. Rendered as a non-interactive overlay layer inside the content
 // stack so it never captures clicks and needs no per-row layout math.
 

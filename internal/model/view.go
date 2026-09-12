@@ -53,18 +53,37 @@ type ColumnCond struct {
 type FilterSpec struct {
 	Query      string    // text to match; empty means match all
 	Regexp     bool      // treat Query as a regular expression
-	Cased      bool      // case-sensitive matching
+	Cased      bool      // case-sensitive matching (applies to Query and Expr)
 	Column     ColumnRef // ColAll, ColNone, a data column, or a virtual column
 	TaggedOnly bool      // keep only rows that carry at least one tag
 	Tag        string    // if set, keep only rows carrying this exact tag
 
+	// Expr is a boolean query expression (see query.go): field comparisons
+	// joined by AND/OR/NOT with parentheses. Empty means no expression filter.
+	Expr string
+
 	Conds    []ColumnCond // per-column conditions
 	CondsAny bool         // true = OR across Conds; false (default) = AND
+
+	// ColFilters are the per-column quick filters from the boxes under each
+	// header: a substring each column must contain. They always narrow (AND),
+	// independent of CondsAny, and honour Cased. Empty values are ignored.
+	ColFilters map[ColumnRef]string
 }
 
 // Empty reports whether the spec would keep every row.
 func (f FilterSpec) Empty() bool {
-	return f.Query == "" && !f.TaggedOnly && f.Tag == "" && len(f.Conds) == 0
+	return f.Query == "" && f.Expr == "" && !f.TaggedOnly && f.Tag == "" &&
+		len(f.Conds) == 0 && !hasColFilter(f.ColFilters)
+}
+
+func hasColFilter(m map[ColumnRef]string) bool {
+	for _, v := range m {
+		if v != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // View is an ordered subset of an Index's rows after filtering and sorting. It
@@ -176,6 +195,8 @@ type compiledFilter struct {
 	queryCol   ColumnRef
 	conds      []compiledCond
 	condsAny   bool
+	expr       rowPred        // compiled boolean query, nil when unset
+	colFilters []compiledCond // per-column quick filters, always ANDed
 }
 
 func (v *View) refilter() error {
@@ -202,6 +223,19 @@ func (v *View) refilter() error {
 		cf.query = m
 		cf.hasQuery = true
 	}
+	if spec.Expr != "" {
+		ast, err := ParseQuery(spec.Expr)
+		if err != nil {
+			return err
+		}
+		if ast != nil {
+			pred, err := v.compileExpr(ast, spec.Cased)
+			if err != nil {
+				return err
+			}
+			cf.expr = pred
+		}
+	}
 	for _, c := range spec.Conds {
 		cc := compiledCond{column: c.Column, all: c.All}
 		for _, val := range c.Values {
@@ -217,6 +251,16 @@ func (v *View) refilter() error {
 		if len(cc.vals) > 0 {
 			cf.conds = append(cf.conds, cc)
 		}
+	}
+	for ref, val := range spec.ColFilters {
+		if val == "" {
+			continue
+		}
+		m, err := compileMatcher(val, false, spec.Cased)
+		if err != nil {
+			return err
+		}
+		cf.colFilters = append(cf.colFilters, compiledCond{column: ref, vals: []matcher{m}})
 	}
 
 	matched := v.rows[:0]
@@ -247,6 +291,14 @@ func (v *View) keep(row int, rec []string, cf compiledFilter) bool {
 	}
 	if len(cf.conds) > 0 && !v.condsMatch(row, rec, cf) {
 		return false
+	}
+	if cf.expr != nil && !cf.expr(row, rec) {
+		return false
+	}
+	for _, c := range cf.colFilters {
+		if !v.columnMatch(row, rec, c.column, c.vals[0]) {
+			return false
+		}
 	}
 	return true
 }

@@ -6,6 +6,7 @@ toolchain go1.22.2
 
 require (
 	fyne.io/fyne/v2 v2.8.1
+	github.com/sqweek/dialog v0.0.0-20260123140253-64c163d53aac
 	modernc.org/sqlite v1.34.4
 )
 
@@ -13,6 +14,7 @@ require (
 	fyne.io/systray v1.12.3-0.20260810170012-af4e8e793ec4 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/FyshOS/fancyfs v0.0.1 // indirect
+	github.com/TheTitanrain/w32 v0.0.0-20180517000239-4f5cfb03fabf // indirect
 	github.com/anthonynsimon/bild v0.14.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect

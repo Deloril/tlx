@@ -1,4 +1,4 @@
-// Package incident stores a set of related timelines and their annotations in a
+// Package casefile stores a set of related timelines and their annotations in a
 // single SQLite database, so an investigator can work across several CSVs as one
 // case. The source CSVs stay on disk and are never imported wholesale; the
 // database holds each timeline's registration, the shared tag palette, per-row
@@ -7,7 +7,7 @@
 //
 // This package depends only on internal/model (for TagDef/SessionSnapshot and
 // timestamp parsing) and a pure-Go SQLite driver, so it builds without cgo.
-package incident
+package casefile
 
 import (
 	"database/sql"
@@ -24,7 +24,7 @@ import (
 
 const schemaVersion = 1
 
-// TimelineMeta is a registered timeline within an incident.
+// TimelineMeta is a registered timeline within a case.
 type TimelineMeta struct {
 	ID         int64
 	Name       string
@@ -50,40 +50,40 @@ type MasterEntry struct {
 	Summary    string
 }
 
-// Incident is an open incident database.
-type Incident struct {
+// Case is an open case database.
+type Case struct {
 	db   *sql.DB
 	path string
 }
 
-// Create makes a new incident database at path and initialises its schema and
+// Create makes a new case database at path and initialises its schema and
 // the default tag palette. It fails if the file cannot be created.
-func Create(path string) (*Incident, error) {
+func Create(path string) (*Case, error) {
 	db, err := openDB(path)
 	if err != nil {
 		return nil, err
 	}
-	in := &Incident{db: db, path: path}
-	if err := in.initSchema(); err != nil {
+	c := &Case{db: db, path: path}
+	if err := c.initSchema(); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return in, nil
+	return c, nil
 }
 
-// Open opens an existing incident database, initialising the schema if the file
+// Open opens an existing case database, initialising the schema if the file
 // is new or empty (so Open doubles as Create for a fresh path).
-func Open(path string) (*Incident, error) {
+func Open(path string) (*Case, error) {
 	db, err := openDB(path)
 	if err != nil {
 		return nil, err
 	}
-	in := &Incident{db: db, path: path}
-	if err := in.initSchema(); err != nil {
+	c := &Case{db: db, path: path}
+	if err := c.initSchema(); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return in, nil
+	return c, nil
 }
 
 func openDB(path string) (*sql.DB, error) {
@@ -102,12 +102,12 @@ func openDB(path string) (*sql.DB, error) {
 }
 
 // Path is the database file path.
-func (in *Incident) Path() string { return in.path }
+func (c *Case) Path() string { return c.path }
 
 // Close releases the database.
-func (in *Incident) Close() error { return in.db.Close() }
+func (c *Case) Close() error { return c.db.Close() }
 
-func (in *Incident) initSchema() error {
+func (c *Case) initSchema() error {
 	const ddl = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS timelines (
@@ -151,18 +151,18 @@ CREATE TABLE IF NOT EXISTS tagged_snapshot (
     summary     TEXT NOT NULL,
     PRIMARY KEY (timeline_id, row)
 );`
-	if _, err := in.db.Exec(ddl); err != nil {
+	if _, err := c.db.Exec(ddl); err != nil {
 		return fmt.Errorf("init schema: %w", err)
 	}
 	// Record schema version and seed the palette once.
 	var have string
-	err := in.db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&have)
+	err := c.db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&have)
 	if err == sql.ErrNoRows {
-		if _, err := in.db.Exec(`INSERT INTO meta(key,value) VALUES('schema_version',?)`,
+		if _, err := c.db.Exec(`INSERT INTO meta(key,value) VALUES('schema_version',?)`,
 			fmt.Sprint(schemaVersion)); err != nil {
 			return err
 		}
-		if err := in.seedPalette(); err != nil {
+		if err := c.seedPalette(); err != nil {
 			return err
 		}
 	} else if err != nil {
@@ -172,21 +172,21 @@ CREATE TABLE IF NOT EXISTS tagged_snapshot (
 }
 
 // seedPalette writes the built-in tag defaults if the palette is empty.
-func (in *Incident) seedPalette() error {
+func (c *Case) seedPalette() error {
 	var n int
-	if err := in.db.QueryRow(`SELECT COUNT(*) FROM tag_defs`).Scan(&n); err != nil {
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM tag_defs`).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
 		return nil
 	}
 	defs := model.NewSession("").TagDefs() // seeded defaults, in priority order
-	return in.SaveTagDefs(defs)
+	return c.SaveTagDefs(defs)
 }
 
 // Timelines returns every registered timeline, oldest first.
-func (in *Incident) Timelines() ([]TimelineMeta, error) {
-	rows, err := in.db.Query(`SELECT id,name,source_path,delimiter,headers,time_col,added_at
+func (c *Case) Timelines() ([]TimelineMeta, error) {
+	rows, err := c.db.Query(`SELECT id,name,source_path,delimiter,headers,time_col,added_at
 		FROM timelines ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -207,10 +207,10 @@ func (in *Incident) Timelines() ([]TimelineMeta, error) {
 }
 
 // Timeline returns a single timeline by id.
-func (in *Incident) Timeline(id int64) (TimelineMeta, error) {
+func (c *Case) Timeline(id int64) (TimelineMeta, error) {
 	var t TimelineMeta
 	var headersJSON string
-	err := in.db.QueryRow(`SELECT id,name,source_path,delimiter,headers,time_col,added_at
+	err := c.db.QueryRow(`SELECT id,name,source_path,delimiter,headers,time_col,added_at
 		FROM timelines WHERE id=?`, id).Scan(&t.ID, &t.Name, &t.SourcePath,
 		&t.Delimiter, &headersJSON, &t.TimeCol, &t.AddedAt)
 	if err != nil {
@@ -220,15 +220,15 @@ func (in *Incident) Timeline(id int64) (TimelineMeta, error) {
 	return t, nil
 }
 
-// AddTimeline registers an already-opened index as a timeline in the incident.
+// AddTimeline registers an already-opened index as a timeline in the case.
 // The timestamp column is auto-detected. name defaults to the file's base name
 // when empty. addedAt is supplied by the caller (the model forbids wall-clock
 // reads in some contexts); pass time.Now().Format(time.RFC3339) or similar.
-func (in *Incident) AddTimeline(name string, idx *model.Index, addedAt string) (TimelineMeta, error) {
+func (c *Case) AddTimeline(name string, idx *model.Index, addedAt string) (TimelineMeta, error) {
 	headers := idx.Headers()
 	headersJSON, _ := json.Marshal(headers)
 	timeCol := model.DetectTimeColumn(idx)
-	res, err := in.db.Exec(`INSERT INTO timelines(name,source_path,delimiter,headers,time_col,added_at)
+	res, err := c.db.Exec(`INSERT INTO timelines(name,source_path,delimiter,headers,time_col,added_at)
 		VALUES(?,?,?,?,?,?)`, name, idx.Path(), string(idx.Delimiter()),
 		string(headersJSON), timeCol, addedAt)
 	if err != nil {
@@ -243,8 +243,8 @@ func (in *Incident) AddTimeline(name string, idx *model.Index, addedAt string) (
 }
 
 // RemoveTimeline deletes a timeline and all of its annotations.
-func (in *Incident) RemoveTimeline(id int64) error {
-	tx, err := in.db.Begin()
+func (c *Case) RemoveTimeline(id int64) error {
+	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
@@ -264,14 +264,14 @@ func (in *Incident) RemoveTimeline(id int64) error {
 }
 
 // SetTimeColumn overrides the detected timestamp column for a timeline.
-func (in *Incident) SetTimeColumn(id int64, col int) error {
-	_, err := in.db.Exec(`UPDATE timelines SET time_col=? WHERE id=?`, col, id)
+func (c *Case) SetTimeColumn(id int64, col int) error {
+	_, err := c.db.Exec(`UPDATE timelines SET time_col=? WHERE id=?`, col, id)
 	return err
 }
 
-// TagDefs returns the incident's shared tag palette in priority order.
-func (in *Incident) TagDefs() ([]model.TagDef, error) {
-	rows, err := in.db.Query(`SELECT name,color FROM tag_defs ORDER BY priority`)
+// TagDefs returns the case's shared tag palette in priority order.
+func (c *Case) TagDefs() ([]model.TagDef, error) {
+	rows, err := c.db.Query(`SELECT name,color FROM tag_defs ORDER BY priority`)
 	if err != nil {
 		return nil, err
 	}
@@ -288,8 +288,8 @@ func (in *Incident) TagDefs() ([]model.TagDef, error) {
 }
 
 // SaveTagDefs replaces the palette with defs, preserving their order as priority.
-func (in *Incident) SaveTagDefs(defs []model.TagDef) error {
-	tx, err := in.db.Begin()
+func (c *Case) SaveTagDefs(defs []model.TagDef) error {
+	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
@@ -307,21 +307,21 @@ func (in *Incident) SaveTagDefs(defs []model.TagDef) error {
 	return tx.Commit()
 }
 
-// LoadAnnotations reads a timeline's annotations into a snapshot. The incident
+// LoadAnnotations reads a timeline's annotations into a snapshot. The case
 // palette is included so a session opened from it paints rows consistently.
-func (in *Incident) LoadAnnotations(timelineID int64) (model.SessionSnapshot, error) {
+func (c *Case) LoadAnnotations(timelineID int64) (model.SessionSnapshot, error) {
 	snap := model.SessionSnapshot{
 		Tags:     map[int][]string{},
 		Comments: map[int]string{},
 		Edits:    map[int]map[int]string{},
 	}
-	defs, err := in.TagDefs()
+	defs, err := c.TagDefs()
 	if err != nil {
 		return snap, err
 	}
 	snap.TagDefs = defs
 
-	tagRows, err := in.db.Query(`SELECT row,tag FROM tags WHERE timeline_id=?`, timelineID)
+	tagRows, err := c.db.Query(`SELECT row,tag FROM tags WHERE timeline_id=?`, timelineID)
 	if err != nil {
 		return snap, err
 	}
@@ -339,7 +339,7 @@ func (in *Incident) LoadAnnotations(timelineID int64) (model.SessionSnapshot, er
 		sort.Strings(snap.Tags[row])
 	}
 
-	cRows, err := in.db.Query(`SELECT row,comment FROM comments WHERE timeline_id=?`, timelineID)
+	cRows, err := c.db.Query(`SELECT row,comment FROM comments WHERE timeline_id=?`, timelineID)
 	if err != nil {
 		return snap, err
 	}
@@ -354,7 +354,7 @@ func (in *Incident) LoadAnnotations(timelineID int64) (model.SessionSnapshot, er
 	}
 	cRows.Close()
 
-	eRows, err := in.db.Query(`SELECT row,col,value FROM edits WHERE timeline_id=?`, timelineID)
+	eRows, err := c.db.Query(`SELECT row,col,value FROM edits WHERE timeline_id=?`, timelineID)
 	if err != nil {
 		return snap, err
 	}
@@ -382,10 +382,10 @@ type RowReader interface {
 
 // SaveAnnotations writes a timeline's annotations back to the database, replacing
 // any prior state for that timeline, and rebuilds its tagged-row snapshot from
-// rows (the open index for the timeline). The incident palette is updated from
+// rows (the open index for the timeline). The case palette is updated from
 // the snapshot so newly defined tags and recolourings persist.
-func (in *Incident) SaveAnnotations(tl TimelineMeta, snap model.SessionSnapshot, rows RowReader) error {
-	tx, err := in.db.Begin()
+func (c *Case) SaveAnnotations(tl TimelineMeta, snap model.SessionSnapshot, rows RowReader) error {
+	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
@@ -465,9 +465,9 @@ func (in *Incident) SaveAnnotations(tl TimelineMeta, snap model.SessionSnapshot,
 // Master returns every tagged row across all timelines, sorted chronologically
 // (rows with a parseable timestamp first, ascending; rows without follow,
 // grouped by timeline then row).
-func (in *Incident) Master() ([]MasterEntry, error) {
+func (c *Case) Master() ([]MasterEntry, error) {
 	names := map[int64]string{}
-	tls, err := in.Timelines()
+	tls, err := c.Timelines()
 	if err != nil {
 		return nil, err
 	}
@@ -478,16 +478,16 @@ func (in *Incident) Master() ([]MasterEntry, error) {
 	// Bulk-load tags and comments into maps first. With a single DB connection
 	// we must never run a query while another cursor is still open, so each of
 	// these fully drains and closes before the next.
-	allTags, err := in.allTags()
+	allTags, err := c.allTags()
 	if err != nil {
 		return nil, err
 	}
-	allComments, err := in.allComments()
+	allComments, err := c.allComments()
 	if err != nil {
 		return nil, err
 	}
 
-	rows, err := in.db.Query(`SELECT timeline_id,row,time_unix,time_raw,summary FROM tagged_snapshot`)
+	rows, err := c.db.Query(`SELECT timeline_id,row,time_unix,time_raw,summary FROM tagged_snapshot`)
 	if err != nil {
 		return nil, err
 	}
@@ -539,8 +539,8 @@ type rowKey struct {
 }
 
 // allTags loads every (timeline,row)->tags mapping in one pass.
-func (in *Incident) allTags() (map[rowKey][]string, error) {
-	rows, err := in.db.Query(`SELECT timeline_id,row,tag FROM tags`)
+func (c *Case) allTags() (map[rowKey][]string, error) {
+	rows, err := c.db.Query(`SELECT timeline_id,row,tag FROM tags`)
 	if err != nil {
 		return nil, err
 	}
@@ -558,8 +558,8 @@ func (in *Incident) allTags() (map[rowKey][]string, error) {
 }
 
 // allComments loads every (timeline,row)->comment mapping in one pass.
-func (in *Incident) allComments() (map[rowKey]string, error) {
-	rows, err := in.db.Query(`SELECT timeline_id,row,comment FROM comments`)
+func (c *Case) allComments() (map[rowKey]string, error) {
+	rows, err := c.db.Query(`SELECT timeline_id,row,comment FROM comments`)
 	if err != nil {
 		return nil, err
 	}

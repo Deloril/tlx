@@ -8,9 +8,14 @@ tag, comment and edit rows under one of three access modes.
 It does CSV/TSV and nothing else. No EVTX, no registry hives, no artefact
 parsing — point another tool at the raw evidence and feed the CSV here.
 
+It's inspired by Eric Zimmerman's Timeline Explorer and by Timesketch, but built
+for a single examiner, not a team. There's no server, no shared database and no
+accounts — it's a desktop app that opens a file. Next to Timesketch it's far
+lighter: nothing to deploy and nothing to run but the binary.
+
 ## Modes
 
-The mode selector in the toolbar (or the `m` key) switches between:
+The mode selector in the toolbar switches between:
 
 - **Read-only** — view, filter, sort, search. No changes possible.
 - **Investigator** — everything above, plus arbitrary tags and a comment per
@@ -40,14 +45,18 @@ store, so this is the deliberate trade for low memory and instant open.
 Everything is reachable both ways. Click a column header to sort, click again to
 reverse. Click a row to load it into the detail pane on the right.
 
-    Ctrl+F   focus the filter box      Enter   apply filter
-    F3       find next match           Esc     clear filter
-    Ctrl+G   go to row number          Ctrl+S  save annotations
-    Ctrl+E   export current view       t       tag selected row
-    c        comment selected row      m       cycle mode
+    /        focus the filter box      Ctrl+F  focus the filter box
+    Enter    apply filter              Esc     clear filter
+    F3       find next match           Ctrl+G  go to row number
+    Ctrl+S   save annotations          Ctrl+E  export current view
+    t        tag selected row          c       comment selected row
 
-The filter box matches any column; prefix the text with `/` to use a regular
-expression. "Tagged only" limits the view to annotated rows.
+The filter box takes a query. A bare word matches any column; `Field=value`
+matches one column (case-insensitive by default), and terms combine with
+`AND`/`OR`/`NOT` and parentheses, e.g.
+`Summary=derp AND (tag=bad OR tag=suspicious)`. Wrap a value in `/…/` for a
+regular expression. Each column header also has a box that filters just that
+column. "Tagged only" limits the view to annotated rows.
 
 ## Running
 

@@ -23,7 +23,7 @@ jobs:
           - os: ubuntu-latest
             asset: tlx-linux-amd64
           - os: macos-latest
-            asset: tlx-macos-universal
+            asset: tlx-macos-universal.zip
           - os: windows-latest
             asset: tlx-windows-amd64.exe
     runs-on: ${{ matrix.os }}
@@ -44,7 +44,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev wayland-protocols libffi-dev
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev wayland-protocols libffi-dev libgtk-3-dev
 
       # Engine is pure Go; test it everywhere without a display.
       - name: Test engine
@@ -55,15 +55,27 @@ jobs:
         shell: bash
         run: go build -ldflags "-s -w" -o "$ASSET" ./cmd/tlx
 
-      - name: Build (macOS universal)
+      # Build a universal binary, then wrap it in a .app bundle so double-clicking
+      # opens a windowed app instead of a Terminal session. The bundle is zipped
+      # so the executable bit and directory structure survive download.
+      - name: Build (macOS universal .app)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
           GOARCH=arm64 go build -ldflags "-s -w" -o tlx-arm64 ./cmd/tlx
           GOARCH=amd64 go build -ldflags "-s -w" -o tlx-amd64 ./cmd/tlx
-          lipo -create -output "$ASSET" tlx-arm64 tlx-amd64
+          lipo -create -output tlx tlx-arm64 tlx-amd64
           rm -f tlx-arm64 tlx-amd64
-          file "$ASSET"
+          file tlx
+
+          APP="Timeline Explorer.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp packaging/darwin/Info.plist "$APP/Contents/Info.plist"
+          cp tlx "$APP/Contents/MacOS/tlx"
+          chmod +x "$APP/Contents/MacOS/tlx"
+          rm -f tlx
+          # Zip preserving the bundle (ditto keeps macOS metadata + exec bits).
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ASSET"
 
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'

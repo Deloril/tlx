@@ -13,8 +13,9 @@ import (
 )
 
 // rowTint is the alpha applied to a tag colour when painting a row background,
-// so the highlight is a wash rather than a solid block.
-const rowTint = 0x55
+// so the highlight is a wash rather than a solid block. 0x40 is 25% more
+// transparent than the original 0x55.
+const rowTint = 0x40
 
 // palettePresets are the colours offered when defining a new tag.
 var palettePresets = []string{

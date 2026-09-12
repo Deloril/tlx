@@ -12,11 +12,15 @@ import (
 	"timeline-engine/internal/model"
 )
 
-// Saved views are application-level, not tied to any incident or file. They are
+// Saved views are application-level, not tied to any case or file. They are
 // stored in the Fyne preferences as a JSON blob so the same named filters are
 // available whether viewing a single CSV, a timeline, or the master view.
 
 const savedViewsKey = "saved_views"
+
+// viewsSidebarOffset is the split position of the left saved-views pane when
+// shown: a narrow column beside the main content.
+const viewsSidebarOffset = 0.16
 
 // condPreset mirrors a model.ColumnCond but references its column by title so a
 // saved view stays portable across timelines with different column orders.
@@ -35,11 +39,15 @@ type sortPreset struct {
 
 type viewPreset struct {
 	Name       string       `json:"name"`
-	Query      string       `json:"query"` // raw search-box text (a leading / means regex)
+	Query      string       `json:"query"` // raw search-box text (query language; see query.go)
+	Cased      bool         `json:"cased"` // case-sensitive matching for the query
 	TaggedOnly bool         `json:"tagged_only"`
 	CondsAny   bool         `json:"conds_any"`
 	Conds      []condPreset `json:"conds"`
 	Sort       []sortPreset `json:"sort"`
+	// ColFilters are the per-column header boxes, keyed by column title so they
+	// carry across timelines with the same fields.
+	ColFilters map[string]string `json:"col_filters,omitempty"`
 }
 
 const anyColumnTitle = "Any column"
@@ -93,24 +101,55 @@ func (a *App) refForTitle(title string) model.ColumnRef {
 	return model.ColAll
 }
 
-func (a *App) viewsMenuItems() []*fyne.MenuItem {
-	items := []*fyne.MenuItem{
-		fyne.NewMenuItem("Save current view…", a.saveCurrentView),
-		fyne.NewMenuItem("Manage saved views…", a.manageViews),
-		fyne.NewMenuItemSeparator(),
+// buildViewsSidebar builds the collapsible left pane: a header with a save
+// action over the scrollable list of saved views. The list is (re)filled by
+// refreshViewsSidebar.
+func (a *App) buildViewsSidebar() *fyne.Container {
+	title := widget.NewLabelWithStyle("Saved views", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	saveBtn := widget.NewButtonWithIcon("Save current view…", theme.DocumentSaveIcon(), a.saveCurrentView)
+	a.viewsList = container.NewVBox()
+	a.refreshViewsSidebar()
+	header := container.NewVBox(title, saveBtn, widget.NewSeparator())
+	return container.NewBorder(header, nil, nil, nil, container.NewVScroll(a.viewsList))
+}
+
+// refreshViewsSidebar repopulates the saved-views list from preferences. Each
+// row applies its view on click and has a delete button.
+func (a *App) refreshViewsSidebar() {
+	if a.viewsList == nil {
+		return
 	}
+	a.viewsList.Objects = nil
 	views := a.loadViews()
 	if len(views) == 0 {
-		empty := fyne.NewMenuItem("(no saved views)", nil)
-		empty.Disabled = true
-		items = append(items, empty)
-		return items
+		empty := widget.NewLabel("(no saved views)")
+		empty.Wrapping = fyne.TextWrapWord
+		a.viewsList.Add(empty)
+		a.viewsList.Refresh()
+		return
 	}
+	for i := range views {
+		v := views[i]
+		apply := widget.NewButton(v.Name, func() { a.applyView(v) })
+		apply.Alignment = widget.ButtonAlignLeading
+		del := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() { a.deleteView(v.Name) })
+		del.Importance = widget.DangerImportance
+		a.viewsList.Add(container.NewBorder(nil, nil, nil, del, apply))
+	}
+	a.viewsList.Refresh()
+}
+
+// deleteView removes a saved view by name and refreshes the sidebar.
+func (a *App) deleteView(name string) {
+	views := a.loadViews()
+	kept := views[:0]
 	for _, v := range views {
-		v := v
-		items = append(items, fyne.NewMenuItem(v.Name, func() { a.applyView(v) }))
+		if v.Name != name {
+			kept = append(kept, v)
+		}
 	}
-	return items
+	a.storeViews(kept)
+	a.refreshViewsSidebar()
 }
 
 // captureView reads the current filter/sort into a preset with the given name.
@@ -118,6 +157,7 @@ func (a *App) captureView(name string) viewPreset {
 	p := viewPreset{
 		Name:       name,
 		Query:      a.search.Text,
+		Cased:      a.caseChk.Checked,
 		TaggedOnly: a.taggedChk.Checked,
 		CondsAny:   a.condsAny,
 	}
@@ -132,6 +172,15 @@ func (a *App) captureView(name string) viewPreset {
 	}
 	for _, sk := range a.sortState {
 		p.Sort = append(p.Sort, sortPreset{ColumnTitle: a.colTitle(sk.Col), Desc: sk.Desc})
+	}
+	for ref, val := range a.colFilter {
+		if val == "" {
+			continue
+		}
+		if p.ColFilters == nil {
+			p.ColFilters = map[string]string{}
+		}
+		p.ColFilters[a.colTitle(ref)] = val
 	}
 	return p
 }
@@ -165,7 +214,10 @@ func (a *App) saveCurrentView() {
 			views = append(views, p)
 		}
 		a.storeViews(views)
-		a.rebuildIncidentMenu()
+		a.refreshViewsSidebar()
+		if !a.viewsSidebarVisible {
+			a.setViewsSidebar(true) // reveal the pane so the saved view is visible
+		}
 	}, a.win)
 }
 
@@ -186,7 +238,15 @@ func (a *App) applyView(p viewPreset) {
 		})
 	}
 	a.condsAny = p.CondsAny
+	a.colFilter = map[model.ColumnRef]string{}
+	for title, val := range p.ColFilters {
+		if val == "" {
+			continue
+		}
+		a.colFilter[a.refForTitle(title)] = val
+	}
 	a.search.SetText(p.Query)
+	a.caseChk.SetChecked(p.Cased)
 	a.taggedChk.SetChecked(p.TaggedOnly)
 	a.applySearch() // applies query + conds + tagged-only together
 
@@ -201,36 +261,4 @@ func (a *App) applyView(p viewPreset) {
 		}
 	}
 	a.refreshTable()
-}
-
-func (a *App) manageViews() {
-	views := a.loadViews()
-	if len(views) == 0 {
-		dialog.ShowInformation("Saved views", "No saved views yet.", a.win)
-		return
-	}
-	list := container.NewVBox()
-	var rebuild func()
-	rebuild = func() {
-		list.Objects = nil
-		for i := range views {
-			i := i
-			del := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
-				views = append(views[:i], views[i+1:]...)
-				a.storeViews(views)
-				a.rebuildIncidentMenu()
-				rebuild()
-			})
-			del.Importance = widget.DangerImportance
-			apply := widget.NewButton("Apply", func() { a.applyView(views[i]) })
-			row := container.NewBorder(nil, nil, nil, container.NewHBox(apply, del),
-				widget.NewLabel(views[i].Name))
-			list.Add(row)
-		}
-		list.Refresh()
-	}
-	rebuild()
-	d := dialog.NewCustom("Saved views", "Close", container.NewVScroll(list), a.win)
-	d.Resize(a.dialogSize(520, 520))
-	d.Show()
 }

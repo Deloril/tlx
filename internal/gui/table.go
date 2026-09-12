@@ -91,7 +91,9 @@ func (a *App) newTable() *bigTable {
 		b := widget.NewButton("", nil)
 		b.Alignment = widget.ButtonAlignLeading
 		b.Importance = widget.LowImportance
-		return b
+		f := widget.NewEntry()
+		f.PlaceHolder = "filter"
+		return container.NewBorder(b, nil, nil, nil, f)
 	}
 	t.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
 		a.updateHeader(id, o)
@@ -168,14 +170,31 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 }
 
 func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
-	btn, ok := o.(*widget.Button)
+	cont, ok := o.(*fyne.Container)
 	if !ok {
 		return
 	}
+	var btn *widget.Button
+	var entry *widget.Entry
+	for _, ch := range cont.Objects {
+		switch w := ch.(type) {
+		case *widget.Button:
+			btn = w
+		case *widget.Entry:
+			entry = w
+		}
+	}
+	if btn == nil || entry == nil {
+		return
+	}
+
 	// Only column headers are shown (ShowHeaderRow); guard other callbacks.
 	if id.Col < 0 || id.Col >= len(a.visible) {
 		btn.SetText("")
 		btn.OnTapped = nil
+		entry.OnChanged = nil
+		entry.SetText("")
+		entry.Hide()
 		return
 	}
 	col := a.cols[a.visible[id.Col]]
@@ -186,6 +205,22 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 	btn.SetText(title)
 	ref := col.ref
 	btn.OnTapped = func() { a.sortByColumn(ref) }
+
+	// Per-column quick filter. Header cells are recycled across columns as the
+	// table scrolls, so rebind text and callbacks to this cell's current column
+	// on every update. Set text with OnChanged detached so the programmatic
+	// SetText below doesn't count as a user edit.
+	entry.Show()
+	entry.OnChanged = nil
+	entry.SetText(a.colFilter[ref])
+	entry.OnChanged = func(s string) {
+		if s == "" {
+			delete(a.colFilter, ref)
+		} else {
+			a.colFilter[ref] = s
+		}
+	}
+	entry.OnSubmitted = func(string) { a.applySearch() } // Enter applies
 }
 
 func (a *App) sortArrow(ref model.ColumnRef) string {

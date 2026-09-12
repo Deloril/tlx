@@ -357,7 +357,7 @@ func (s *Session) RowColor(row int) (string, bool) {
 
 // SessionSnapshot is a plain-data copy of every annotation in a session: tags,
 // comments, cell edits and the tag palette. It is what an external store (the
-// incident database) reads and writes, keeping the model free of any DB code.
+// case database) reads and writes, keeping the model free of any DB code.
 type SessionSnapshot struct {
 	Tags     map[int][]string
 	Comments map[int]string

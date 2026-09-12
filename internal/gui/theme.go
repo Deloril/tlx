@@ -25,6 +25,11 @@ func (c *compactTheme) Color(name fyne.ThemeColorName, v fyne.ThemeVariant) colo
 	if c.force {
 		v = c.variant
 	}
+	// The default light theme's foreground is a mid grey that reads as washed
+	// out against white; use a near-black so cell text has more contrast.
+	if v == theme.VariantLight && name == theme.ColorNameForeground {
+		return color.NRGBA{R: 0x14, G: 0x14, B: 0x14, A: 0xFF}
+	}
 	return c.Theme.Color(name, v)
 }
 

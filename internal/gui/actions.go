@@ -47,29 +47,25 @@ func (a *App) onModeChange(s string) {
 	}
 }
 
-// cycleMode steps Read-only -> Investigator -> World-write -> Read-only.
-func (a *App) cycleMode() {
-	next := (a.sess.Mode() + 1) % 3
-	a.sess.SetMode(next)
-	a.modeSelect.SetSelected(next.String())
-}
-
 func (a *App) applySearch() {
-	q := strings.TrimSpace(a.search.Text)
+	if a.view == nil {
+		return
+	}
 	spec := model.FilterSpec{
 		Column:     model.ColAll,
+		Expr:       strings.TrimSpace(a.search.Text),
+		Cased:      a.caseChk.Checked,
 		TaggedOnly: a.taggedChk.Checked,
 		Conds:      a.conds,
 		CondsAny:   a.condsAny,
-	}
-	if strings.HasPrefix(q, "/") && len(q) > 1 {
-		spec.Query = q[1:]
-		spec.Regexp = true
-	} else {
-		spec.Query = q
+		ColFilters: a.colFilter,
 	}
 	if err := a.view.Apply(spec); err != nil {
-		a.showError(err)
+		// A malformed query is reported inline in the status bar rather than in a
+		// modal, so the user can keep editing. The previous view is left intact.
+		if a.statusFilter != nil {
+			a.statusFilter.SetText("Filter: " + err.Error())
+		}
 		return
 	}
 	a.clearSelection()
@@ -82,9 +78,10 @@ func (a *App) clearFilter() {
 	a.taggedChk.SetChecked(false)
 	a.conds = nil
 	a.condsAny = false
+	a.colFilter = map[model.ColumnRef]string{}
 	a.view.Apply(model.FilterSpec{})
 	a.clearSelection()
-	a.refreshTable()
+	a.refreshTable() // repaints headers, clearing the per-column boxes
 }
 
 // Tagging.
@@ -290,12 +287,7 @@ func (a *App) showDetail(master int) {
 
 func (a *App) openFile() {
 	do := func() {
-		dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
-			if err != nil || r == nil {
-				return
-			}
-			path := r.URI().Path()
-			r.Close()
+		a.showOpenFile(func(path string) {
 			idx, err := model.Open(path, nil)
 			if err != nil {
 				a.showError(err)
@@ -306,11 +298,11 @@ func (a *App) openFile() {
 				a.showError(err)
 			}
 			sess.SetMode(a.startMode)
-			a.inc, a.curTimeline, a.masterMode = nil, nil, false
+			a.cse, a.curTimeline, a.masterMode = nil, nil, false
 			a.annotCols = true
 			a.reloadWith(idx, sess)
-			a.rebuildIncidentMenu()
-		}, a.win)
+			a.rebuildCaseMenu()
+		})
 	}
 	a.confirmIfDirty(do)
 }
@@ -319,25 +311,25 @@ func (a *App) openFile() {
 // Comment columns appended and cell edits applied) next to the source. The
 // source CSV is never modified.
 func (a *App) save() {
-	// Inside an incident, annotations persist to the incident database rather
+	// Inside a case, annotations persist to the case database rather
 	// than to a CSV sidecar.
-	if a.inc != nil {
+	if a.cse != nil {
 		switch {
 		case a.masterMode:
 			dialog.ShowInformation("Master timeline",
 				"The master timeline is a read-only summary. Save annotations from within each timeline.", a.win)
 		case a.curTimeline != nil:
-			if err := a.inc.SaveAnnotations(*a.curTimeline, a.sess.Snapshot(), a.idx); err != nil {
+			if err := a.cse.SaveAnnotations(*a.curTimeline, a.sess.Snapshot(), a.idx); err != nil {
 				a.showError(err)
 				return
 			}
 			a.sess.MarkSaved()
 			a.refreshStatus()
 			dialog.ShowInformation("Saved",
-				fmt.Sprintf("Annotations for %q saved to the incident.", a.curTimeline.Name), a.win)
+				fmt.Sprintf("Annotations for %q saved to the case.", a.curTimeline.Name), a.win)
 		default:
 			dialog.ShowInformation("No timeline open",
-				"Open a timeline from the Incident menu, then save.", a.win)
+				"Open a timeline from the Case menu, then save.", a.win)
 		}
 		return
 	}
@@ -365,18 +357,13 @@ func annotatedPath(src string) string {
 }
 
 func (a *App) export() {
-	dialog.ShowFileSave(func(w fyne.URIWriteCloser, err error) {
-		if err != nil || w == nil {
-			return
-		}
-		path := w.URI().Path()
-		w.Close() // Export opens its own handle
+	a.showSaveFile("", func(path string) {
 		if err := model.Export(a.view, a.sess, path); err != nil {
 			a.showError(err)
 			return
 		}
 		dialog.ShowInformation("Exported", fmt.Sprintf("%d rows written to\n%s", a.view.Len(), path), a.win)
-	}, a.win)
+	})
 }
 
 func (a *App) confirmIfDirty(then func()) {
@@ -397,8 +384,8 @@ func (a *App) onClose() {
 		if a.idx != nil {
 			a.idx.Close()
 		}
-		if a.inc != nil {
-			a.inc.Close() // flushes and checkpoints the WAL
+		if a.cse != nil {
+			a.cse.Close() // flushes and checkpoints the WAL
 		}
 		a.win.Close()
 	})
@@ -426,9 +413,10 @@ func (a *App) gotoLine() {
 
 // findNext scrolls to the next row after the current selection whose any column
 // contains the search text (case-insensitive). It does not change the filter.
+// The needle is taken from the search box as plain text; for a field=value
+// query it uses the value, so a quick F3 still works alongside the query syntax.
 func (a *App) findNext() {
-	q := strings.TrimSpace(a.search.Text)
-	q = strings.TrimPrefix(q, "/")
+	q := findNeedle(a.search.Text)
 	if q == "" {
 		return
 	}
@@ -446,6 +434,22 @@ func (a *App) findNext() {
 		}
 	}
 	dialog.ShowInformation("Find", "No further matches.", a.win)
+}
+
+// findNeedle extracts a plain substring to use for F3 find-next from whatever
+// is in the search box. It takes the value side of the last field=value term
+// and unwraps /regex/ or "quoted" delimiters, best effort.
+func findNeedle(q string) string {
+	q = strings.TrimSpace(q)
+	if i := strings.LastIndex(q, "="); i >= 0 {
+		q = strings.TrimSpace(q[i+1:])
+	}
+	if len(q) >= 2 {
+		if (q[0] == '/' && q[len(q)-1] == '/') || (q[0] == '"' && q[len(q)-1] == '"') {
+			q = q[1 : len(q)-1]
+		}
+	}
+	return q
 }
 
 func (a *App) rowContains(master int, needleLower string) bool {
@@ -524,12 +528,12 @@ Modes
   World-write    also edit any cell value
 
 Keyboard
-  Ctrl+F   focus filter        Enter   apply filter
-  F3       find next match     Esc     clear filter
-  Ctrl+G   go to row           Ctrl+S  save annotated CSV
-  Ctrl+E   export view         Ctrl+B  toggle sidebar
+  /        focus filter        Ctrl+F  focus filter
+  Enter    apply filter        Esc     clear filter
+  F3       find next match     Ctrl+G  go to row
+  Ctrl+S   save                Ctrl+E  export view
+  Ctrl+B   toggle detail pane  Ctrl+L  toggle views sidebar
   t        tag selected row    c       comment row
-  m        cycle mode
   Click a header to sort; click again to reverse.
 
 Tags and colours
@@ -544,33 +548,51 @@ Editing cells
   or click away commits, Esc cancels.
 
 Filtering
-  The search box matches any column (prefix / for a regex). The Filter
-  button builds per-column conditions with multiple values each, combined
-  with AND or OR. The "#" column keeps each row's original CSV line
-  number even after filtering or sorting.
+  The search box takes a query. The simplest is a word, which matches any
+  column. You can also write field comparisons and combine them:
 
-Incidents (File and Incident menus)
-  An incident groups several timelines in one database (.tlxdb), chosen
-  when you create it. Add a CSV with Incident > Add timeline; open any
-  timeline from the Incident menu. Inside an incident, Save writes your
-  tags, comments and edits back to the incident database, not to a CSV.
-  Incident > Master timeline shows every tagged row from all timelines in
+    Summary=derp                 Summary contains "derp"
+    Host!=ws1                    Host does not contain "ws1"
+    tag=bad OR tag=suspicious    either tag present
+    Summary=derp AND (tag=bad OR tag=suspicious)
+    Host=/^dc-\d+$/              regex: value wrapped in /…/
+    Summary="a b c"              quote values with spaces
+    NOT tag=benign               negate a term
+
+  Field is a column name (case-insensitive), or one of tag, comment, row.
+  AND/OR/NOT and parentheses group terms; AND binds tighter than OR.
+  Matching is case-insensitive unless "Case sensitive" is ticked. A bad
+  query is reported in the status bar and leaves the current view intact.
+
+  Each column header also has a box: type text and press Enter to filter
+  that column to rows containing it. The boxes combine (AND) with each
+  other and with the search query. The Filter button builds richer
+  per-column conditions with multiple values each. The "#" column keeps
+  each row's original CSV line number even after filtering or sorting.
+
+Cases (File and Case menus)
+  A case groups several timelines in one database (.tlxdb), chosen
+  when you create it. Add a CSV with Case > Add timeline; open any
+  timeline from the Case menu. Inside a case, Save writes your
+  tags, comments and edits back to the case database, not to a CSV.
+  Case > Master timeline shows every tagged row from all timelines in
   one time-sorted view; click a row's "Open in…" button to jump to it in
   its own timeline. The timestamp column of each timeline is detected
   automatically.
 
-Saved views (Views menu)
-  Save the current filter and sort as a named view. Saved views are
-  application-wide, so they apply to any file, timeline or the master
-  view. Columns are matched by name, so a view carries across timelines
-  with the same fields.
+Saved views (left sidebar, toggle with Ctrl+L or the Views button)
+  Save current view stores the filter query, per-column boxes, sort and
+  case-sensitivity as a named view. Click a view in the sidebar to apply it;
+  the trash icon deletes it. Saved views are application-wide, so they apply
+  to any file, timeline or the master view. Columns are matched by name, so a
+  view carries across timelines with the same fields.
 
 Hover a truncated cell to see its full contents in a pop-up box.
 Use the palette button to switch between light and dark themes.
 
 Save writes every row to <file>.annotated.csv for a standalone CSV (data
 plus Tags and Comment, with cell edits applied); the source CSV is never
-modified. Inside an incident, Save persists to the incident database.
+modified. Inside a case, Save persists to the case database.
 Export writes the current filtered, sorted view to a CSV.`
 	lbl := widget.NewLabel(help)
 	lbl.TextStyle = fyne.TextStyle{Monospace: true}

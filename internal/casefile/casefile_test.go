@@ -1,4 +1,4 @@
-package incident
+package casefile
 
 import (
 	"os"
@@ -12,20 +12,20 @@ func memIndex(headers []string, records [][]string) *model.Index {
 	return model.NewMemoryIndex(headers, records)
 }
 
-func newIncident(t *testing.T) *Incident {
+func newCase(t *testing.T) *Case {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "case.tlxdb")
-	in, err := Create(path)
+	c, err := Create(path)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Cleanup(func() { in.Close() })
-	return in
+	t.Cleanup(func() { c.Close() })
+	return c
 }
 
 func TestDefaultPaletteSeeded(t *testing.T) {
-	in := newIncident(t)
-	defs, err := in.TagDefs()
+	c := newCase(t)
+	defs, err := c.TagDefs()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestDefaultPaletteSeeded(t *testing.T) {
 }
 
 func TestAddTimelineDetectsTimeColumn(t *testing.T) {
-	in := newIncident(t)
+	c := newCase(t)
 	idx := memIndex(
 		[]string{"Timestamp", "Host", "Message"},
 		[][]string{
@@ -46,14 +46,14 @@ func TestAddTimelineDetectsTimeColumn(t *testing.T) {
 			{"2026-09-01T08:14:55Z", "fw", "outbound"},
 		},
 	)
-	tl, err := in.AddTimeline("workstation", idx, "2026-09-11T00:00:00Z")
+	tl, err := c.AddTimeline("workstation", idx, "2026-09-11T00:00:00Z")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tl.TimeCol != 0 {
 		t.Errorf("TimeCol = %d, want 0", tl.TimeCol)
 	}
-	tls, err := in.Timelines()
+	tls, err := c.Timelines()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestAddTimelineDetectsTimeColumn(t *testing.T) {
 }
 
 func TestAnnotationRoundTrip(t *testing.T) {
-	in := newIncident(t)
+	c := newCase(t)
 	idx := memIndex(
 		[]string{"Timestamp", "Message"},
 		[][]string{
@@ -71,7 +71,7 @@ func TestAnnotationRoundTrip(t *testing.T) {
 			{"2026-09-01T09:00:00Z", "beacon"},
 		},
 	)
-	tl, err := in.AddTimeline("t1", idx, "2026-09-11T00:00:00Z")
+	tl, err := c.AddTimeline("t1", idx, "2026-09-11T00:00:00Z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,11 +82,11 @@ func TestAnnotationRoundTrip(t *testing.T) {
 		Edits:    map[int]map[int]string{1: {1: "beacon (edited)"}},
 		TagDefs:  []model.TagDef{{Name: "Bad", Color: "#E53935"}, {Name: "beacon", Color: "#1E88E5"}},
 	}
-	if err := in.SaveAnnotations(tl, snap, idx); err != nil {
+	if err := c.SaveAnnotations(tl, snap, idx); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := in.LoadAnnotations(tl.ID)
+	got, err := c.LoadAnnotations(tl.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,14 +99,14 @@ func TestAnnotationRoundTrip(t *testing.T) {
 	if got.Edits[1][1] != "beacon (edited)" {
 		t.Errorf("edit = %q", got.Edits[1][1])
 	}
-	// The new "beacon" def must have persisted into the incident palette.
+	// The new "beacon" def must have persisted into the case palette.
 	if _, ok := colorOf(got.TagDefs, "beacon"); !ok {
 		t.Errorf("beacon def not persisted: %+v", got.TagDefs)
 	}
 }
 
 func TestMasterOrdering(t *testing.T) {
-	in := newIncident(t)
+	c := newCase(t)
 	idxA := memIndex([]string{"Timestamp", "Msg"}, [][]string{
 		{"2026-09-01T09:02:10Z", "ticket forged"},  // row 0
 		{"2026-09-01T08:12:03Z", "initial access"}, // row 1
@@ -115,22 +115,22 @@ func TestMasterOrdering(t *testing.T) {
 		{"2026-09-01T08:14:55Z", "outbound c2"}, // row 0
 		{"not-a-time", "no timestamp here"},     // row 1
 	})
-	tlA, _ := in.AddTimeline("dc", idxA, "2026-09-11T00:00:00Z")
-	tlB, _ := in.AddTimeline("fw", idxB, "2026-09-11T00:00:00Z")
+	tlA, _ := c.AddTimeline("dc", idxA, "2026-09-11T00:00:00Z")
+	tlB, _ := c.AddTimeline("fw", idxB, "2026-09-11T00:00:00Z")
 
 	// Tag every row so all appear in the master view.
-	if err := in.SaveAnnotations(tlA, model.SessionSnapshot{
+	if err := c.SaveAnnotations(tlA, model.SessionSnapshot{
 		Tags: map[int][]string{0: {"Bad"}, 1: {"Bad"}},
 	}, idxA); err != nil {
 		t.Fatal(err)
 	}
-	if err := in.SaveAnnotations(tlB, model.SessionSnapshot{
+	if err := c.SaveAnnotations(tlB, model.SessionSnapshot{
 		Tags: map[int][]string{0: {"Suspicious"}, 1: {"Good"}},
 	}, idxB); err != nil {
 		t.Fatal(err)
 	}
 
-	m, err := in.Master()
+	m, err := c.Master()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,19 +157,19 @@ func TestMasterOrdering(t *testing.T) {
 }
 
 func TestRemoveTimeline(t *testing.T) {
-	in := newIncident(t)
+	c := newCase(t)
 	idx := memIndex([]string{"Timestamp", "Msg"}, [][]string{{"2026-09-01T08:12:03Z", "x"}})
-	tl, _ := in.AddTimeline("t", idx, "2026-09-11T00:00:00Z")
-	in.SaveAnnotations(tl, model.SessionSnapshot{Tags: map[int][]string{0: {"Bad"}}}, idx)
+	tl, _ := c.AddTimeline("t", idx, "2026-09-11T00:00:00Z")
+	c.SaveAnnotations(tl, model.SessionSnapshot{Tags: map[int][]string{0: {"Bad"}}}, idx)
 
-	if err := in.RemoveTimeline(tl.ID); err != nil {
+	if err := c.RemoveTimeline(tl.ID); err != nil {
 		t.Fatal(err)
 	}
-	tls, _ := in.Timelines()
+	tls, _ := c.Timelines()
 	if len(tls) != 0 {
 		t.Errorf("timelines after remove = %d", len(tls))
 	}
-	m, _ := in.Master()
+	m, _ := c.Master()
 	if len(m) != 0 {
 		t.Errorf("master after remove = %d", len(m))
 	}
@@ -193,13 +193,13 @@ func TestFileBackedTimelineEndToEnd(t *testing.T) {
 	}
 	defer idx.Close()
 
-	in, err := Create(filepath.Join(dir, "case.tlxdb"))
+	c, err := Create(filepath.Join(dir, "case.tlxdb"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer in.Close()
+	defer c.Close()
 
-	tl, err := in.AddTimeline("auth", idx, "2026-09-11T00:00:00Z")
+	tl, err := c.AddTimeline("auth", idx, "2026-09-11T00:00:00Z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,11 +208,11 @@ func TestFileBackedTimelineEndToEnd(t *testing.T) {
 	}
 
 	snap := model.SessionSnapshot{Tags: map[int][]string{1: {"Suspicious"}}}
-	if err := in.SaveAnnotations(tl, snap, idx); err != nil {
+	if err := c.SaveAnnotations(tl, snap, idx); err != nil {
 		t.Fatal(err)
 	}
 
-	m, err := in.Master()
+	m, err := c.Master()
 	if err != nil {
 		t.Fatal(err)
 	}

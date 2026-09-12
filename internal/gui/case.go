@@ -12,44 +12,44 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/incident"
+	"timeline-engine/internal/casefile"
 	"timeline-engine/internal/model"
 )
 
-// buildMainMenu assembles the window menu bar. The Incident menu is rebuilt from
-// the current incident state each time this is called.
+// buildMainMenu assembles the window menu bar. The Case menu is rebuilt from
+// the current case state each time this is called.
 func (a *App) buildMainMenu() *fyne.MainMenu {
 	fileMenu := fyne.NewMenu("File",
 		fyne.NewMenuItem("Open CSV…", a.openFile),
 		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("New incident…", a.newIncident),
-		fyne.NewMenuItem("Open incident…", a.openIncident),
+		fyne.NewMenuItem("New case…", a.newCase),
+		fyne.NewMenuItem("Open case…", a.openCase),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Save", a.save),
 		fyne.NewMenuItem("Export view…", a.export),
 	)
 
-	a.incidentMenu = fyne.NewMenu("Incident", a.incidentMenuItems()...)
+	a.caseMenu = fyne.NewMenu("Case", a.caseMenuItems()...)
 
-	viewsMenu := fyne.NewMenu("Views", a.viewsMenuItems()...)
-
-	return fyne.NewMainMenu(fileMenu, a.incidentMenu, viewsMenu)
+	// Saved views live in the collapsible left sidebar (see views.go), not the
+	// menu bar.
+	return fyne.NewMainMenu(fileMenu, a.caseMenu)
 }
 
-// incidentMenuItems lists the master timeline, an add action and every
-// registered timeline, or a hint when no incident is open.
-func (a *App) incidentMenuItems() []*fyne.MenuItem {
-	if a.inc == nil {
-		hint := fyne.NewMenuItem("(open or create an incident)", nil)
+// caseMenuItems lists the master timeline, an add action and every
+// registered timeline, or a hint when no case is open.
+func (a *App) caseMenuItems() []*fyne.MenuItem {
+	if a.cse == nil {
+		hint := fyne.NewMenuItem("(open or create a case)", nil)
 		hint.Disabled = true
 		return []*fyne.MenuItem{hint}
 	}
 	items := []*fyne.MenuItem{
 		fyne.NewMenuItem("★ Master timeline", a.showMasterTimeline),
-		fyne.NewMenuItem("Add timeline…", a.addTimelineToIncident),
+		fyne.NewMenuItem("Add timeline…", a.addTimelineToCase),
 		fyne.NewMenuItemSeparator(),
 	}
-	tls, err := a.inc.Timelines()
+	tls, err := a.cse.Timelines()
 	if err != nil {
 		a.showError(err)
 	}
@@ -70,14 +70,14 @@ func (a *App) incidentMenuItems() []*fyne.MenuItem {
 	return items
 }
 
-// rebuildIncidentMenu refreshes the whole menu bar so the Incident submenu
-// reflects the current incident and open timeline.
-func (a *App) rebuildIncidentMenu() {
+// rebuildCaseMenu refreshes the whole menu bar so the Case submenu
+// reflects the current case and open timeline.
+func (a *App) rebuildCaseMenu() {
 	a.win.SetMainMenu(a.buildMainMenu())
 }
 
 // clearView tears down any open file/timeline and shows a placeholder. Used when
-// an incident is created or opened but no timeline is loaded yet, so the grid
+// a case is created or opened but no timeline is loaded yet, so the grid
 // does not keep showing an unrelated file.
 func (a *App) clearView() {
 	if a.idx != nil {
@@ -91,85 +91,68 @@ func (a *App) clearView() {
 	a.editing, a.editFocused = false, false
 	a.hideTooltip()
 
-	msg := widget.NewLabel("Add a timeline from the Incident menu to begin.")
-	add := widget.NewButtonWithIcon("Add timeline…", theme.ContentAddIcon(), a.addTimelineToIncident)
+	msg := widget.NewLabel("Add a timeline from the Case menu to begin.")
+	add := widget.NewButtonWithIcon("Add timeline…", theme.ContentAddIcon(), a.addTimelineToCase)
 	a.win.SetContent(container.NewCenter(container.NewVBox(msg, container.NewCenter(add))))
 }
 
-// setIncident swaps the active incident, closing any previous one.
-func (a *App) setIncident(inc *incident.Incident) {
-	if a.inc != nil {
-		a.inc.Close()
+// setCase swaps the active case, closing any previous one.
+func (a *App) setCase(cse *casefile.Case) {
+	if a.cse != nil {
+		a.cse.Close()
 	}
-	a.inc = inc
+	a.cse = cse
 	a.curTimeline = nil
 	a.masterMode = false
-	a.rebuildIncidentMenu()
+	a.rebuildCaseMenu()
 }
 
-func (a *App) newIncident() {
-	d := dialog.NewFileSave(func(w fyne.URIWriteCloser, err error) {
-		if err != nil || w == nil {
-			return
-		}
-		path := w.URI().Path()
-		w.Close() // Create opens its own handle; an empty file is a valid empty DB
+func (a *App) newCase() {
+	a.showSaveFile("case.tlxdb", func(path string) {
 		if filepath.Ext(path) == "" {
 			path += ".tlxdb"
 		}
-		inc, err := incident.Create(path)
+		cse, err := casefile.Create(path)
 		if err != nil {
 			a.showError(err)
 			return
 		}
-		a.setIncident(inc)
+		a.setCase(cse)
 		a.clearView()
-	}, a.win)
-	d.SetFileName("incident.tlxdb")
-	d.Show()
+	})
 }
 
-func (a *App) openIncident() {
-	dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
-		if err != nil || r == nil {
-			return
-		}
-		path := r.URI().Path()
-		r.Close()
-		inc, err := incident.Open(path)
+func (a *App) openCase() {
+	a.showOpenFile(func(path string) {
+		cse, err := casefile.Open(path)
 		if err != nil {
 			a.showError(err)
 			return
 		}
-		a.setIncident(inc)
-		tls, _ := inc.Timelines()
+		a.setCase(cse)
+		tls, _ := cse.Timelines()
 		if len(tls) == 0 {
 			a.clearView()
 			return
 		}
 		a.openTimeline(tls[0])
-	}, a.win)
+	})
 }
 
-func (a *App) addTimelineToIncident() {
-	if a.inc == nil {
-		a.showError(fmt.Errorf("open or create an incident first"))
+func (a *App) addTimelineToCase() {
+	if a.cse == nil {
+		a.showError(fmt.Errorf("open or create a case first"))
 		return
 	}
 	a.confirmIfDirty(func() {
-		dialog.ShowFileOpen(func(r fyne.URIReadCloser, err error) {
-			if err != nil || r == nil {
-				return
-			}
-			path := r.URI().Path()
-			r.Close()
+		a.showOpenFile(func(path string) {
 			idx, err := model.Open(path, nil)
 			if err != nil {
 				a.showError(err)
 				return
 			}
 			name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-			tl, err := a.inc.AddTimeline(name, idx, time.Now().Format(time.RFC3339))
+			tl, err := a.cse.AddTimeline(name, idx, time.Now().Format(time.RFC3339))
 			if err != nil {
 				idx.Close()
 				a.showError(err)
@@ -177,12 +160,12 @@ func (a *App) addTimelineToIncident() {
 			}
 			// Open it straight away, reusing the index we just indexed.
 			a.openTimelineWithIndex(tl, idx)
-		}, a.win)
+		})
 	})
 }
 
 // openTimeline opens a registered timeline by (re)indexing its source file.
-func (a *App) openTimeline(tl incident.TimelineMeta) {
+func (a *App) openTimeline(tl casefile.TimelineMeta) {
 	a.confirmIfDirty(func() {
 		idx, err := model.Open(tl.SourcePath, nil)
 		if err != nil {
@@ -193,12 +176,12 @@ func (a *App) openTimeline(tl incident.TimelineMeta) {
 	})
 }
 
-// openTimelineWithIndex loads a timeline's annotations from the incident onto an
+// openTimelineWithIndex loads a timeline's annotations from the case onto an
 // already-opened index and shows it. It does not prompt about unsaved changes;
 // callers that switch context should have done so already.
-func (a *App) openTimelineWithIndex(tl incident.TimelineMeta, idx *model.Index) {
+func (a *App) openTimelineWithIndex(tl casefile.TimelineMeta, idx *model.Index) {
 	sess := model.NewSession(tl.SourcePath)
-	if snap, err := a.inc.LoadAnnotations(tl.ID); err != nil {
+	if snap, err := a.cse.LoadAnnotations(tl.ID); err != nil {
 		a.showError(err)
 	} else {
 		sess.LoadSnapshot(snap)
@@ -210,17 +193,17 @@ func (a *App) openTimelineWithIndex(tl incident.TimelineMeta, idx *model.Index) 
 	a.masterEntries = nil
 	a.annotCols = true
 	a.reloadWith(idx, sess)
-	a.rebuildIncidentMenu()
+	a.rebuildCaseMenu()
 }
 
 // showMasterTimeline builds a read-only, time-sorted view of every tagged row
-// across all timelines in the incident.
+// across all timelines in the casefile.
 func (a *App) showMasterTimeline() {
-	if a.inc == nil {
+	if a.cse == nil {
 		return
 	}
 	a.confirmIfDirty(func() {
-		entries, err := a.inc.Master()
+		entries, err := a.cse.Master()
 		if err != nil {
 			a.showError(err)
 			return
@@ -245,7 +228,7 @@ func (a *App) showMasterTimeline() {
 		a.masterMode = true
 		a.annotCols = false
 		a.reloadWith(idx, sess)
-		a.rebuildIncidentMenu()
+		a.rebuildCaseMenu()
 		if len(entries) == 0 {
 			dialog.ShowInformation("Master timeline",
 				"No tagged rows yet. Tag rows in a timeline and save to populate the master view.", a.win)
@@ -255,7 +238,7 @@ func (a *App) showMasterTimeline() {
 
 // openMasterSource opens the timeline behind a master-view row at that row.
 func (a *App) openMasterSource(viewRow int) {
-	if !a.masterMode || a.inc == nil {
+	if !a.masterMode || a.cse == nil {
 		return
 	}
 	if viewRow < 0 || viewRow >= a.view.Len() {
@@ -266,7 +249,7 @@ func (a *App) openMasterSource(viewRow int) {
 		return
 	}
 	e := a.masterEntries[master]
-	tl, err := a.inc.Timeline(e.TimelineID)
+	tl, err := a.cse.Timeline(e.TimelineID)
 	if err != nil {
 		a.showError(err)
 		return

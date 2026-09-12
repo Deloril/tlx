@@ -24,6 +24,7 @@ func (a *App) registerShortcuts() {
 	add(fyne.KeyS, fyne.KeyModifierControl, a.save)
 	add(fyne.KeyE, fyne.KeyModifierControl, a.export)
 	add(fyne.KeyB, fyne.KeyModifierControl, a.toggleSidebar)
+	add(fyne.KeyL, fyne.KeyModifierControl, a.toggleViewsSidebar)
 
 	// Bare-key shortcuts fire only when no text field is focused, so typing a
 	// filter or editing a cell never triggers them.
@@ -32,6 +33,11 @@ func (a *App) registerShortcuts() {
 			return
 		}
 		switch ev.Name {
+		case fyne.KeySlash:
+			// vim-style: focus the search box. The guard above means this only
+			// fires when no text field is focused, so typing / into a filter or
+			// cell still works normally.
+			a.win.Canvas().Focus(a.search)
 		case fyne.KeyF3:
 			a.findNext()
 		case fyne.KeyEscape:
@@ -40,8 +46,6 @@ func (a *App) registerShortcuts() {
 			a.tagSelected()
 		case fyne.KeyC:
 			a.commentSelected()
-		case fyne.KeyM:
-			a.cycleMode()
 		}
 	})
 }

@@ -13,7 +13,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"timeline-engine/internal/incident"
+	"timeline-engine/internal/casefile"
 	"timeline-engine/internal/model"
 )
 
@@ -35,15 +35,15 @@ type App struct {
 	sess *model.Session
 	view *model.View
 
-	// Incident context. When inc is non-nil the app is working inside an
-	// incident: curTimeline names the open timeline (nil in the master view),
-	// masterMode is true while showing the cross-timeline master timeline, and
-	// masterEntries backs that view's rows.
-	inc           *incident.Incident
-	curTimeline   *incident.TimelineMeta
+	// Case context. When cse is non-nil the app is working inside a case:
+	// curTimeline names the open timeline (nil in the master view), masterMode
+	// is true while showing the cross-timeline master timeline, and masterEntries
+	// backs that view's rows.
+	cse           *casefile.Case
+	curTimeline   *casefile.TimelineMeta
 	masterMode    bool
-	masterEntries []incident.MasterEntry
-	incidentMenu  *fyne.Menu
+	masterEntries []casefile.MasterEntry
+	caseMenu      *fyne.Menu
 
 	// annotCols controls whether the virtual #/Tags/Comment columns are built.
 	// True for CSV and timeline views, false for the master timeline (whose
@@ -57,11 +57,18 @@ type App struct {
 	table  *bigTable
 	detail *fyne.Container
 	scroll *container.Scroll
-	split  *container.Split
+	split  *container.Split // table | detail
+
+	// Left sidebar listing saved views, and the split that holds it beside the
+	// main content. viewsList is the repopulated list of view rows.
+	outerSplit *container.Split // viewsPanel | split
+	viewsPanel *fyne.Container
+	viewsList  *fyne.Container
 
 	search     *widget.Entry
 	modeSelect *widget.Select
 	taggedChk  *widget.Check
+	caseChk    *widget.Check
 	themeBtn   *widget.Button
 
 	statusMode   *widget.Label
@@ -72,13 +79,18 @@ type App struct {
 	selRow int // selected view row, -1 if none
 	selCol int // selected table column, -1 if none
 
-	sidebarVisible bool
-	themeVariant   fyne.ThemeVariant
+	sidebarVisible      bool // right detail pane
+	viewsSidebarVisible bool // left saved-views pane
+	themeVariant        fyne.ThemeVariant
 
 	// Per-column filter conditions, kept so the search box and column filter
 	// compose and both survive a re-apply.
 	conds    []model.ColumnCond
 	condsAny bool
+
+	// colFilter holds the quick-filter text under each column header, keyed by
+	// column ref so it survives column show/hide and reorders.
+	colFilter map[model.ColumnRef]string
 
 	// Inline cell editing state (view coordinates).
 	editing     bool
@@ -98,12 +110,14 @@ type App struct {
 // or let the user open one from the toolbar; either way Run shows the window.
 func New() *App {
 	a := &App{
-		fyne:           app.NewWithID("nz.timeline.explorer"),
-		selRow:         -1,
-		selCol:         -1,
-		sidebarVisible: true,
-		themeVariant:   theme.VariantDark,
-		startMode:      model.ReadOnly,
+		fyne:                app.NewWithID("nz.timeline.explorer"),
+		selRow:              -1,
+		selCol:              -1,
+		sidebarVisible:      true,
+		viewsSidebarVisible: true,
+		themeVariant:        theme.VariantDark,
+		startMode:           model.ReadOnly,
+		colFilter:           map[model.ColumnRef]string{},
 	}
 	a.fyne.Settings().SetTheme(newCompactTheme(a.themeVariant))
 	a.win = a.fyne.NewWindow("Timeline explorer")
@@ -121,7 +135,7 @@ func (a *App) SetStartMode(m model.Mode) { a.startMode = m }
 
 // OpenInitial loads an already-opened index and session into the window.
 func (a *App) OpenInitial(idx *model.Index, sess *model.Session) {
-	a.inc, a.curTimeline, a.masterMode = nil, nil, false
+	a.cse, a.curTimeline, a.masterMode = nil, nil, false
 	a.annotCols = true
 	a.reloadWith(idx, sess)
 }
@@ -183,11 +197,19 @@ func (a *App) buildUI() {
 	a.split = container.NewHSplit(a.table, a.scroll)
 	a.split.Offset = 0.72
 
-	body := container.NewBorder(a.buildToolbar(), a.buildStatusBar(), nil, nil, a.split)
+	a.viewsPanel = a.buildViewsSidebar()
+	a.outerSplit = container.NewHSplit(a.viewsPanel, a.split)
+	a.outerSplit.Offset = viewsSidebarOffset
+
+	body := container.NewBorder(a.buildToolbar(), a.buildStatusBar(), nil, nil, a.outerSplit)
 	// The hover layer floats above everything but captures no input.
 	content := container.NewStack(body, a.hoverLayer)
 	a.win.SetContent(content)
 	a.win.Resize(fyne.NewSize(1280, 760))
+	if !a.viewsSidebarVisible {
+		a.viewsPanel.Hide()
+		a.outerSplit.SetOffset(0.0)
+	}
 	if !a.sidebarVisible {
 		a.scroll.Hide()
 		a.split.SetOffset(1.0)
@@ -202,6 +224,7 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 	}
 	a.idx, a.sess = idx, sess
 	a.view = model.NewView(idx, sess)
+	a.colFilter = map[model.ColumnRef]string{}
 	a.sortState = nil
 	a.selRow, a.selCol = -1, -1
 	a.editing, a.editFocused = false, false
@@ -213,14 +236,14 @@ func (a *App) reloadWith(idx *model.Index, sess *model.Session) {
 }
 
 // windowTitle reflects the current context: master view, a named timeline in an
-// incident, or a standalone file.
+// case, or a standalone file.
 func (a *App) windowTitle() string {
 	const base = "Timeline explorer"
 	switch {
-	case a.masterMode && a.inc != nil:
-		return base + " — Master timeline [" + filepath.Base(a.inc.Path()) + "]"
-	case a.curTimeline != nil && a.inc != nil:
-		return base + " — " + a.curTimeline.Name + " [" + filepath.Base(a.inc.Path()) + "]"
+	case a.masterMode && a.cse != nil:
+		return base + " — Master timeline [" + filepath.Base(a.cse.Path()) + "]"
+	case a.curTimeline != nil && a.cse != nil:
+		return base + " — " + a.curTimeline.Name + " [" + filepath.Base(a.cse.Path()) + "]"
 	case a.idx != nil:
 		return base + " — " + a.idx.Path()
 	default:
@@ -240,13 +263,15 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 	a.modeSelect.SetSelected(a.sess.Mode().String())
 
 	a.search = widget.NewEntry()
-	a.search.SetPlaceHolder("Filter across all columns (regex with /… ). Enter to apply, Esc to clear")
+	a.search.SetPlaceHolder(`Filter: text, or field=value AND (tag=bad OR tag=suspicious). /regex/ for regex. Enter to apply, Esc to clear`)
 	a.search.OnSubmitted = func(string) { a.applySearch() }
 
 	a.taggedChk = widget.NewCheck("Tagged only", func(bool) { a.applySearch() })
+	a.caseChk = widget.NewCheck("Case sensitive", func(bool) { a.applySearch() })
 
 	tagBtn := widget.NewButtonWithIcon("Tag", theme.ContentAddIcon(), a.tagSelected)
 	commentBtn := widget.NewButtonWithIcon("Comment", theme.MailComposeIcon(), a.commentSelected)
+	viewsBtn := widget.NewButtonWithIcon("Views", theme.ListIcon(), a.toggleViewsSidebar)
 	filterBtn := widget.NewButtonWithIcon("Filter", theme.ListIcon(), a.columnFilter)
 	colsBtn := widget.NewButtonWithIcon("Columns", theme.ViewFullScreenIcon(), a.columnPicker)
 	sidebarBtn := widget.NewButtonWithIcon("Sidebar", theme.MenuIcon(), a.toggleSidebar)
@@ -254,9 +279,9 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 	a.updateThemeButton()
 	helpBtn := widget.NewButtonWithIcon("Help", theme.HelpIcon(), a.showHelp)
 
-	left := container.NewHBox(openBtn, saveBtn, exportBtn, widget.NewSeparator(),
+	left := container.NewHBox(viewsBtn, openBtn, saveBtn, exportBtn, widget.NewSeparator(),
 		widget.NewLabel("Mode:"), a.modeSelect, widget.NewSeparator(),
-		tagBtn, commentBtn, widget.NewSeparator(), a.taggedChk)
+		tagBtn, commentBtn, widget.NewSeparator(), a.taggedChk, a.caseChk)
 	right := container.NewHBox(filterBtn, sidebarBtn, a.themeBtn, colsBtn, helpBtn)
 	// Search stretches in the middle.
 	return container.NewBorder(nil, nil, left, right, a.search)
