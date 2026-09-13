@@ -516,6 +516,14 @@ func (a *App) showTooltip(text string, spans [][2]int, at fyne.Position) {
 	if a.hoverLayer == nil {
 		return
 	}
+	// Re-read the box colours from the active theme every time. The rectangle's
+	// fill is a static value that Fyne does not refresh on a theme toggle, so
+	// without this the box keeps whatever variant it was built with (dark box,
+	// dark text — unreadable in light mode).
+	th := a.fyne.Settings().Theme()
+	a.hoverBG.FillColor = th.Color(theme.ColorNameInputBackground, a.themeVariant)
+	a.hoverBG.StrokeColor = th.Color(theme.ColorNameInputBorder, a.themeVariant)
+
 	if len(spans) > 0 {
 		a.hoverText.Segments = highlightSegments(text, spans)
 	} else {
@@ -561,7 +569,7 @@ func (a *App) hideTooltip() {
 
 // buildHoverLayer creates the (initially hidden) tooltip overlay.
 func (a *App) buildHoverLayer() {
-	a.hoverBG = canvas.NewRectangle(theme.Color(theme.ColorNameOverlayBackground))
+	a.hoverBG = canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
 	a.hoverBG.StrokeColor = theme.Color(theme.ColorNameInputBorder)
 	a.hoverBG.StrokeWidth = 1
 	a.hoverBG.CornerRadius = 4

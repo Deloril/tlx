@@ -609,12 +609,15 @@ func (a *App) rowContains(master int, needleLower string) bool {
 
 func (a *App) columnPicker() {
 	boxes := make([]*widget.Check, len(a.cols))
-	grid := container.NewGridWithColumns(2)
+	// A single left-aligned column reads as a checklist. A grid stretches each
+	// cell to fill the dialog width, so short column names end up flung apart
+	// with large gaps between them.
+	list := container.NewVBox()
 	for i := range a.cols {
 		c := widget.NewCheck(a.cols[i].title, nil)
 		c.SetChecked(a.cols[i].visible)
 		boxes[i] = c
-		grid.Add(c)
+		list.Add(c)
 	}
 	setAll := func(v bool) {
 		for _, c := range boxes {
@@ -625,7 +628,7 @@ func (a *App) columnPicker() {
 		widget.NewButton("Select all", func() { setAll(true) }),
 		widget.NewButton("Select none", func() { setAll(false) }),
 	)
-	content := container.NewBorder(tools, nil, nil, nil, container.NewVScroll(grid))
+	content := container.NewBorder(tools, nil, nil, nil, container.NewVScroll(list))
 
 	d := dialog.NewCustomConfirm("Columns", "Apply", "Cancel", content, func(ok bool) {
 		if !ok {
@@ -646,7 +649,7 @@ func (a *App) columnPicker() {
 		a.clearSelection()
 		a.refreshTable()
 	}, a.win)
-	d.Resize(a.dialogSize(700, 640))
+	d.Resize(a.dialogSize(380, 560))
 	d.Show()
 }
 
