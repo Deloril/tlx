@@ -212,7 +212,7 @@ func New() *App {
 	}
 	a.fyne.Settings().SetTheme(newCompactTheme(a.themeVariant))
 	a.fyne.SetIcon(appIcon)
-	a.win = a.fyne.NewWindow("Timeline explorer")
+	a.win = a.fyne.NewWindow("tlx")
 	a.win.SetIcon(appIcon)
 	a.win.Resize(fyne.NewSize(1280, 760))
 	a.win.SetCloseIntercept(a.onClose)
@@ -490,7 +490,7 @@ func (a *App) resetFilterState() {
 // windowTitle reflects the current context: master view, a named timeline in an
 // case, or a standalone file.
 func (a *App) windowTitle() string {
-	const base = "Timeline explorer"
+	const base = "tlx"
 	switch {
 	case a.masterMode && a.cse != nil:
 		return base + " — Master timeline [" + filepath.Base(a.cse.Path()) + "]"

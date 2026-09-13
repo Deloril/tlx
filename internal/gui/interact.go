@@ -443,6 +443,14 @@ func (a *App) revealPanel(p *dockPanel) {
 	if !a.sidebarVisible && !p.floating {
 		a.setSidebar(true)
 	}
+	// Collapse the other docked panels so the intended one gets the space.
+	// Floating panels have their own window, so leave them be.
+	for _, other := range a.rightPanels {
+		if other == nil || other == p || other.floating {
+			continue
+		}
+		other.setExpanded(false)
+	}
 	p.focus() // expands if docked, raises the window if floating
 }
 

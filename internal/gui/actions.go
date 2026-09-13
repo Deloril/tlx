@@ -273,35 +273,35 @@ func (a *App) showDetail(master int) {
 	}
 	mode := a.sess.Mode()
 
+	// Each field is an accordion section so it can be collapsed independently.
+	// MultiOpen lets any combination be open at once; OpenAll below keeps the
+	// familiar "everything visible" starting state.
+	acc := widget.NewAccordion()
+	acc.MultiOpen = true
+
 	// Master view: the row is a tagged entry from another timeline. Offer to
 	// jump to it in its own timeline, and skip the annotation controls below
 	// (they belong to a real session, not this read-only summary).
 	if a.masterMode && master >= 0 && master < len(a.masterEntries) {
 		e := a.masterEntries[master]
-		items := []fyne.CanvasObject{
+		head := []fyne.CanvasObject{
 			widget.NewLabelWithStyle(e.Timeline+" — row "+fmt.Sprint(e.Row+1),
 				fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			widget.NewButtonWithIcon("Open in "+e.Timeline, theme.NavigateNextIcon(),
 				func() { a.openMasterSource(a.selRow) }),
-			widget.NewSeparator(),
 		}
 		for i, h := range a.idx.Headers() {
 			val := a.valueOf(master, model.ColumnRef(i))
-			items = append(items, widget.NewSeparator(),
-				widget.NewLabelWithStyle(h, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-				newSelectableLabel(a, val))
+			acc.Append(widget.NewAccordionItem(h, newSelectableLabel(a, val)))
 		}
-		a.detail.Objects = items
+		acc.OpenAll()
+		a.detail.Objects = append(head, acc)
 		a.detail.Refresh()
 		return
 	}
 
-	items := []fyne.CanvasObject{
-		widget.NewLabelWithStyle(fmt.Sprintf("Row %d", master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-	}
-
-	// Tags block, each chip prefixed with its colour.
-	tagsRow := container.NewHBox(widget.NewLabel("Tags:"))
+	// Tags section, each chip prefixed with its colour.
+	tagsRow := container.NewHBox()
 	for _, t := range a.sess.Tags(master) {
 		t := t
 		hex, _ := a.sess.TagColor(t)
@@ -319,30 +319,30 @@ func (a *App) showDetail(master int) {
 	if mode != model.ReadOnly {
 		tagsRow.Add(widget.NewButtonWithIcon("", theme.ContentAddIcon(), a.tagSelected))
 	}
-	items = append(items, tagsRow)
+	acc.Append(widget.NewAccordionItem("Tags", tagsRow))
 
-	// Comment block.
+	// Comment section.
 	if mode == model.ReadOnly {
-		items = append(items, widget.NewLabel("Comment: "+a.sess.Comment(master)))
+		acc.Append(widget.NewAccordionItem("Comment", widget.NewLabel(a.sess.Comment(master))))
 	} else {
 		ce := widget.NewMultiLineEntry()
 		ce.SetText(a.sess.Comment(master))
 		ce.SetMinRowsVisible(3)
 		ce.OnSubmitted = func(s string) { a.sess.SetComment(master, s); a.refreshTable() }
-		items = append(items,
-			widget.NewLabel("Comment (Shift+Enter for newline, Enter to save):"), ce)
+		body := container.NewVBox(
+			widget.NewLabel("Shift+Enter for newline, Enter to save:"), ce)
+		acc.Append(widget.NewAccordionItem("Comment", body))
 	}
 
-	// One field per data column. Adopted tag/comment columns are shown as the
-	// Tags and Comment blocks above, not repeated here.
+	// One section per data column. Adopted tag/comment columns are shown as the
+	// Tags and Comment sections above, not repeated here.
 	for i, h := range a.idx.Headers() {
 		i := i
 		if a.annotCols && a.adopted.Has(i) {
 			continue
 		}
 		val := a.valueOf(master, model.ColumnRef(i))
-		items = append(items, widget.NewSeparator(),
-			widget.NewLabelWithStyle(h, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+		var body fyne.CanvasObject
 		if mode == model.WorldWrite {
 			e := widget.NewMultiLineEntry()
 			e.SetText(val)
@@ -354,13 +354,18 @@ func (a *App) showDetail(master int) {
 				}
 				a.refreshTable()
 			}
-			items = append(items, e)
+			body = e
 		} else {
-			items = append(items, newSelectableLabel(a, val))
+			body = newSelectableLabel(a, val)
 		}
+		acc.Append(widget.NewAccordionItem(h, body))
 	}
+	acc.OpenAll()
 
-	a.detail.Objects = items
+	head := []fyne.CanvasObject{
+		widget.NewLabelWithStyle(fmt.Sprintf("Row %d", master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+	}
+	a.detail.Objects = append(head, acc)
 	a.detail.Refresh()
 }
 

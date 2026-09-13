@@ -365,16 +365,10 @@ func (a *App) addNoteAndReveal(kind, text string) {
 	a.revealNotesPanel()
 }
 
-// revealNotesPanel shows the right dock and brings the notes panel forward.
+// revealNotesPanel shows the right dock, brings the notes panel forward and
+// collapses the other docked panels (see revealPanel).
 func (a *App) revealNotesPanel() {
-	if a.notesPanel == nil {
-		return
-	}
-	if !a.sidebarVisible {
-		a.setSidebar(true)
-	}
-	a.notesPanel.focus()
-	a.refreshRightDock()
+	a.revealPanel(a.notesPanel)
 }
 
 // strikeThrough overlays a combining long stroke on each rune so a "done" note

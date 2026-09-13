@@ -110,7 +110,7 @@ func (p *dockPanel) float() {
 	p.floating = true
 	p.bodyWrap.Objects = nil
 	p.bodyWrap.Refresh()
-	p.win = p.app.fyne.NewWindow(p.title + " — Timeline explorer")
+	p.win = p.app.fyne.NewWindow(p.title + " — tlx")
 	p.win.SetContent(p.floatContent())
 	p.win.Resize(fyne.NewSize(520, 560))
 	p.win.SetCloseIntercept(p.dock) // closing re-docks rather than losing the panel
