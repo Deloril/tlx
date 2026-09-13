@@ -1,4 +1,4 @@
-_proper up front, this application is pure AI slop. It's been developed with Claude, and until you do, no human has reviewed the code. Appears to work great, but stating this up front._
+_proper up front, this application is pure AI slop. It's been developed with Claude, and until you do, no human has reviewed the code. Appears to work great, but you have been warned._
 
 # Timeline explorer
 
