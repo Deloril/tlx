@@ -1,6 +1,8 @@
 package gui
 
 import (
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -20,11 +22,12 @@ import (
 // have just a highlighted part of it captured as an artifact.
 type selectableLabel struct {
 	widget.Entry
-	app *App
+	app    *App
+	master int // row this text belongs to, for actions that write back to it
 }
 
-func newSelectableLabel(app *App, text string) *selectableLabel {
-	s := &selectableLabel{app: app}
+func newSelectableLabel(app *App, master int, text string) *selectableLabel {
+	s := &selectableLabel{app: app, master: master}
 	s.MultiLine = true
 	s.Wrapping = fyne.TextWrapWord
 	s.ExtendBaseWidget(s)
@@ -78,6 +81,17 @@ func (s *selectableLabel) TappedSecondary(e *fyne.PointEvent) {
 			s.app.addNoteAndReveal(casefile.NoteArtifact, target)
 		}))
 	}
+	// Base64-decode the target into this row's comment. Only offered when the
+	// comment is writable (a single timeline open, not the read-only master view).
+	if s.app.notesAvailable() && target != "" {
+		which := "field"
+		if strings.TrimSpace(sel) != "" {
+			which = "selection"
+		}
+		items = append(items, fyne.NewMenuItem(fmt.Sprintf("Base64 decode %s into comment", which), func() {
+			s.app.base64ToComment(s.master, target)
+		}))
+	}
 	if strings.TrimSpace(sel) != "" {
 		items = append(items, fyne.NewMenuItem("Copy", func() {
 			s.app.win.Clipboard().SetContent(sel)
@@ -94,4 +108,49 @@ func (s *selectableLabel) TappedSecondary(e *fyne.PointEvent) {
 		cv = s.app.win.Canvas()
 	}
 	widget.NewPopUpMenu(fyne.NewMenu("", items...), cv).ShowAtPosition(e.AbsolutePosition)
+}
+
+// base64ToComment decodes s and appends the result to the row's comment, tagged
+// with a "Base64 decodes to:" prefix so the origin is clear. A decode failure
+// surfaces as an error dialog rather than writing garbage.
+func (a *App) base64ToComment(master int, s string) {
+	decoded, err := decodeBase64(s)
+	if err != nil {
+		a.showError(fmt.Errorf("base64 decode: %w", err))
+		return
+	}
+	add := "Base64 decodes to: " + decoded
+	existing := a.sess.Comment(master)
+	if existing != "" {
+		existing += " " + add
+	} else {
+		existing = add
+	}
+	if err := a.sess.SetComment(master, existing); err != nil {
+		a.showError(err)
+		return
+	}
+	if a.sidebarVisible && a.selectedMaster() == master {
+		a.showDetail(master)
+	}
+	a.refreshTable()
+}
+
+// decodeBase64 decodes text that may be standard or URL-safe base64, with or
+// without padding, and tolerates whitespace and line wrapping. It returns an
+// error only when every variant rejects the input.
+func decodeBase64(s string) (string, error) {
+	s = strings.Join(strings.Fields(s), "") // drop whitespace and line breaks
+	if s == "" {
+		return "", errors.New("nothing to decode")
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding, base64.RawStdEncoding,
+		base64.URLEncoding, base64.RawURLEncoding,
+	} {
+		if b, err := enc.DecodeString(s); err == nil {
+			return string(b), nil
+		}
+	}
+	return "", errors.New("not valid base64")
 }

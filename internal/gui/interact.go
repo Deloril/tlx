@@ -529,7 +529,7 @@ func (a *App) onCellDoubleClick(row, col int) {
 // read in the grid.
 func (a *App) showCellPopout(title string, master int, ref model.ColumnRef) {
 	a.hideTooltip()
-	body := newSelectableLabel(a, a.valueOf(master, ref))
+	body := newSelectableLabel(a, master, a.valueOf(master, ref))
 	label := widget.NewLabelWithStyle(
 		fmt.Sprintf("%s — row %d", title, master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	w := a.fyne.NewWindow(title + " — tlx")

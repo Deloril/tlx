@@ -292,7 +292,7 @@ func (a *App) showDetail(master int) {
 		}
 		for i, h := range a.idx.Headers() {
 			val := a.valueOf(master, model.ColumnRef(i))
-			acc.Append(widget.NewAccordionItem(h, newSelectableLabel(a, val)))
+			acc.Append(widget.NewAccordionItem(h, newSelectableLabel(a, master, val)))
 		}
 		acc.OpenAll()
 		a.detail.Objects = append(head, acc)
@@ -354,7 +354,7 @@ func (a *App) showDetail(master int) {
 			}
 			body = geBox
 		} else {
-			body = newSelectableLabel(a, val)
+			body = newSelectableLabel(a, master, val)
 		}
 		acc.Append(widget.NewAccordionItem(h, body))
 	}
