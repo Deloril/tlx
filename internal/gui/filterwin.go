@@ -88,14 +88,15 @@ func (a *App) buildFilterContent() fyne.CanvasObject {
 // prefilled from cond when given.
 func (a *App) addFilterRow(cond *model.ColumnCond) {
 	titles, _, titleByRef := a.filterColumnChoices()
+	ve, veBox := newResizableEntry(2)
 	r := &filterRow{
 		colSel: widget.NewSelect(titles, nil),
-		values: widget.NewMultiLineEntry(),
+		values: ve,
 		allChk: widget.NewCheck("all values", nil),
 		reChk:  widget.NewCheck("regex", nil),
+		negChk: widget.NewCheck("exclude", nil),
 	}
 	r.values.SetPlaceHolder("one value per line")
-	r.values.SetMinRowsVisible(2)
 	r.colSel.SetSelected(anyColumnTitle)
 	if cond != nil {
 		if t, ok := titleByRef[cond.Column]; ok {
@@ -104,16 +105,17 @@ func (a *App) addFilterRow(cond *model.ColumnCond) {
 		r.values.SetText(strings.Join(cond.Values, "\n"))
 		r.allChk.SetChecked(cond.All)
 		r.reChk.SetChecked(cond.Regexp)
+		r.negChk.SetChecked(cond.Neg)
 	}
 	removeBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 		r.removed = true
 		a.filterConds.Remove(r.box)
 		a.filterConds.Refresh()
 	})
-	opts := container.NewHBox(r.allChk, r.reChk, removeBtn)
+	opts := container.NewHBox(r.allChk, r.reChk, r.negChk, removeBtn)
 	r.box = container.NewVBox(
 		container.NewBorder(nil, nil, widget.NewLabel("Column:"), opts, r.colSel),
-		r.values,
+		veBox,
 		widget.NewSeparator(),
 	)
 	a.filterRows = append(a.filterRows, r)
@@ -158,6 +160,7 @@ func (a *App) commitFilter() {
 				Values: vals,
 				All:    r.allChk.Checked,
 				Regexp: r.reChk.Checked,
+				Neg:    r.negChk.Checked,
 			})
 		}
 		a.conds = conds

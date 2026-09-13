@@ -30,6 +30,7 @@ type condPreset struct {
 	Regexp      bool     `json:"regexp"`
 	Cased       bool     `json:"cased"`
 	All         bool     `json:"all"`
+	Neg         bool     `json:"neg,omitempty"`
 }
 
 type sortPreset struct {
@@ -170,6 +171,7 @@ func (a *App) captureView(name string) viewPreset {
 			Regexp:      c.Regexp,
 			Cased:       c.Cased,
 			All:         c.All,
+			Neg:         c.Neg,
 		})
 	}
 	for _, sk := range a.sortState {
@@ -238,6 +240,7 @@ func (a *App) applyView(p viewPreset) {
 			Regexp: cp.Regexp,
 			Cased:  cp.Cased,
 			All:    cp.All,
+			Neg:    cp.Neg,
 		})
 	}
 	a.condsAny = p.CondsAny

@@ -15,24 +15,23 @@ func timelineCommentKey(path string) string { return "timeline_comment:" + path 
 
 // buildCommentsContent is the body of the right dock's timeline-comments panel.
 func (a *App) buildCommentsContent() fyne.CanvasObject {
-	a.commentEntry = widget.NewMultiLineEntry()
-	a.commentEntry.Wrapping = fyne.TextWrapWord
-	a.commentEntry.SetMinRowsVisible(10)
+	var box fyne.CanvasObject
+	a.commentEntry, box = newResizableEntry(10)
 	a.loadTimelineComment()
-	a.commentEntry.OnChanged = func(s string) {
+	a.commentEntry.setOnChanged(func(s string) {
 		if a.suppressComment {
 			return
 		}
 		a.saveTimelineComment(s)
-	}
+	})
 	if !a.notesAvailable() {
 		a.commentEntry.Disable()
 		return container.NewBorder(
-			widget.NewLabel("Open a timeline to add comments."), nil, nil, nil, a.commentEntry)
+			widget.NewLabel("Open a timeline to add comments."), nil, nil, nil, box)
 	}
 	hint := widget.NewLabel("Running notes for this timeline, saved as you type.")
 	hint.Wrapping = fyne.TextWrapWord
-	return container.NewBorder(hint, nil, nil, nil, a.commentEntry)
+	return container.NewBorder(hint, nil, nil, nil, box)
 }
 
 // loadTimelineComment fills the field from the current timeline's stored comment

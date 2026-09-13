@@ -37,6 +37,9 @@ func (v *View) BuildHighlighter(spec FilterSpec) *Highlighter {
 		}
 	}
 	for _, c := range spec.Conds {
+		if c.Neg { // an excluded condition matches rows that DON'T contain the value
+			continue
+		}
 		for _, val := range c.Values {
 			if val == "" {
 				continue

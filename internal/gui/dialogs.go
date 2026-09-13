@@ -65,9 +65,10 @@ func (a *App) updateThemeButton() {
 // (see filterwin.go).
 type filterRow struct {
 	colSel  *widget.Select
-	values  *widget.Entry
+	values  *growEntry
 	allChk  *widget.Check
 	reChk   *widget.Check
+	negChk  *widget.Check // "exclude": invert the condition (the ≠ case)
 	box     *fyne.Container
 	removed bool
 }

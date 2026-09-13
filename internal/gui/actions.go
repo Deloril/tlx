@@ -325,12 +325,11 @@ func (a *App) showDetail(master int) {
 	if mode == model.ReadOnly {
 		acc.Append(widget.NewAccordionItem("Comment", widget.NewLabel(a.sess.Comment(master))))
 	} else {
-		ce := widget.NewMultiLineEntry()
+		ce, ceBox := newResizableEntry(3)
 		ce.SetText(a.sess.Comment(master))
-		ce.SetMinRowsVisible(3)
 		ce.OnSubmitted = func(s string) { a.sess.SetComment(master, s); a.refreshTable() }
 		body := container.NewVBox(
-			widget.NewLabel("Shift+Enter for newline, Enter to save:"), ce)
+			widget.NewLabel("Shift+Enter for newline, Enter to save:"), ceBox)
 		acc.Append(widget.NewAccordionItem("Comment", body))
 	}
 
@@ -344,17 +343,16 @@ func (a *App) showDetail(master int) {
 		val := a.valueOf(master, model.ColumnRef(i))
 		var body fyne.CanvasObject
 		if mode == model.WorldWrite {
-			e := widget.NewMultiLineEntry()
-			e.SetText(val)
-			e.SetMinRowsVisible(1)
-			e.OnSubmitted = func(s string) {
+			ge, geBox := newResizableEntry(1)
+			ge.SetText(val)
+			ge.OnSubmitted = func(s string) {
 				if err := a.sess.SetCell(master, i, s); err != nil {
 					a.showError(err)
 					return
 				}
 				a.refreshTable()
 			}
-			body = e
+			body = geBox
 		} else {
 			body = newSelectableLabel(a, val)
 		}

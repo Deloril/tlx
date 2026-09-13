@@ -90,7 +90,7 @@ type App struct {
 	notesTimesBox     *fyne.Container
 	noteAddArtifact   *widget.Entry // manual entry for the Artifacts list
 	noteAddTime       *widget.Entry // manual entry for the Times list
-	commentEntry      *widget.Entry
+	commentEntry      *growEntry
 	suppressComment   bool // set while loading the comment field, to swallow OnChanged
 
 	// Filter UI state. filterConds holds the structured per-column condition
@@ -134,6 +134,13 @@ type App struct {
 	anchorView int
 	hoverRow   int
 	hoverCol   int // column last under the pointer, for column-aware context actions
+
+	// Double-click detection for the grid. Fyne's Table isn't DoubleTappable and
+	// wiring the interface in would delay every single click by the double-tap
+	// window; instead we time consecutive presses on the same cell ourselves.
+	lastClickAt         time.Time
+	lastClickRow        int
+	lastClickCol        int
 
 	sidebarVisible      bool // right dock (filter + detail panels)
 	viewsSidebarVisible bool // left sidebar (views + case + IOC sections)
@@ -203,6 +210,8 @@ func New() *App {
 		anchorView:          -1,
 		hoverRow:            -1,
 		hoverCol:            -1,
+		lastClickRow:        -1,
+		lastClickCol:        -1,
 		sidebarVisible:      false, // detail pane starts collapsed; Ctrl+B reveals it
 		viewsSidebarVisible: false, // saved-views pane starts collapsed; Ctrl+L reveals it
 		themeVariant:        theme.VariantDark,

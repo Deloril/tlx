@@ -46,6 +46,7 @@ type ColumnCond struct {
 	Regexp bool      // treat each value as a regular expression
 	Cased  bool      // case-sensitive matching
 	All    bool      // require every value (AND); default is any (OR)
+	Neg    bool      // invert: keep rows this condition would otherwise reject
 }
 
 // FilterSpec describes an absolute filter over the full row set. The free-text
@@ -199,6 +200,7 @@ func (m matcher) match(s string) bool {
 type compiledCond struct {
 	column ColumnRef
 	all    bool
+	neg    bool // invert the condition's result
 	vals   []matcher
 }
 
@@ -259,7 +261,7 @@ func (v *View) refilter() error {
 		}
 	}
 	for _, c := range spec.Conds {
-		cc := compiledCond{column: c.Column, all: c.All}
+		cc := compiledCond{column: c.Column, all: c.All, neg: c.Neg}
 		for _, val := range c.Values {
 			if val == "" {
 				continue
@@ -345,6 +347,16 @@ func (v *View) condsMatch(row int, rec []string, cf compiledFilter) bool {
 }
 
 func (v *View) condMatch(row int, rec []string, c compiledCond) bool {
+	hit := v.condHit(row, rec, c)
+	if c.neg {
+		return !hit
+	}
+	return hit
+}
+
+// condHit is the un-negated test: the values combine by OR, or by AND when
+// c.all is set.
+func (v *View) condHit(row int, rec []string, c compiledCond) bool {
 	for _, m := range c.vals {
 		hit := v.columnMatch(row, rec, c.column, m)
 		if c.all && !hit {

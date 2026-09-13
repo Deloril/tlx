@@ -487,6 +487,57 @@ func (a *App) setViewsSidebar(show bool) {
 	a.outerSplit.Refresh()
 }
 
+// Double-click. Two plain presses on the same cell within doubleClickInterval
+// pop a non-editable cell's full contents into their own window.
+
+const doubleClickInterval = 300 * time.Millisecond
+
+// onTablePress times consecutive presses on the same cell. The hover row/col are
+// current at press time (the pointer is over the cell), so they identify it.
+func (a *App) onTablePress() {
+	now := time.Now()
+	row, col := a.hoverRow, a.hoverCol
+	if row < 0 || col < 0 {
+		a.lastClickAt = time.Time{}
+		return
+	}
+	if !a.lastClickAt.IsZero() && now.Sub(a.lastClickAt) <= doubleClickInterval &&
+		row == a.lastClickRow && col == a.lastClickCol {
+		a.lastClickAt = time.Time{} // consume, so a third press starts fresh
+		a.onCellDoubleClick(row, col)
+		return
+	}
+	a.lastClickAt = now
+	a.lastClickRow, a.lastClickCol = row, col
+}
+
+// onCellDoubleClick pops out a cell's contents, but only for columns that can't
+// be edited inline — an editable cell is already in an edit box by now.
+func (a *App) onCellDoubleClick(row, col int) {
+	if a.view == nil || row < 0 || row >= a.view.Len() || col < 0 || col >= len(a.visible) {
+		return
+	}
+	c := a.cols[a.visible[col]]
+	if a.cellEditable(c.ref) {
+		return
+	}
+	a.showCellPopout(c.title, a.view.Master(row), c.ref)
+}
+
+// showCellPopout opens a small window with the full cell text, selectable and
+// copyable (and note-capturable, like the detail pane), for a value too big to
+// read in the grid.
+func (a *App) showCellPopout(title string, master int, ref model.ColumnRef) {
+	a.hideTooltip()
+	body := newSelectableLabel(a, a.valueOf(master, ref))
+	header := widget.NewLabelWithStyle(
+		fmt.Sprintf("%s — row %d", title, master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	w := a.fyne.NewWindow(title + " — tlx")
+	w.SetContent(container.NewBorder(header, nil, nil, nil, container.NewVScroll(body)))
+	w.Resize(fyne.NewSize(520, 360))
+	w.Show()
+}
+
 // Hover tooltip. Rendered as a non-interactive overlay layer inside the content
 // stack so it never captures clicks and needs no per-row layout math.
 
@@ -514,10 +565,38 @@ func (a *App) hoverCell(id widget.TableCellID, at fyne.Position) {
 		a.hideTooltip()
 		return
 	}
-	// Highlight the same matches the grid does. Spans are computed on the raw
-	// text (not the one-line form) so the byte offsets line up with what the
-	// tooltip actually renders.
-	a.showTooltip(full, a.hl.Spans(ref, full), at)
+	// A huge cell would make a tooltip taller than the screen, so cap it. Spans
+	// are computed on the capped text (not the one-line form) so the byte offsets
+	// line up with what the tooltip actually renders.
+	shown := capTooltipText(full)
+	a.showTooltip(shown, a.hl.Spans(ref, shown), at)
+}
+
+const (
+	tooltipMaxLines   = 15  // most rows the hover box will show
+	tooltipMaxLineLen = 300 // longest single line, so one line can't wrap off-screen
+)
+
+// capTooltipText limits the hover text to the first tooltipMaxLines lines and
+// bounds each line's length. When either limit trims content the last line
+// becomes an ellipsis, so it is clear more was hidden.
+func capTooltipText(s string) string {
+	lines := strings.Split(s, "\n")
+	trimmed := false
+	if len(lines) > tooltipMaxLines {
+		lines = lines[:tooltipMaxLines-1]
+		trimmed = true
+	}
+	for i, ln := range lines {
+		if len(ln) > tooltipMaxLineLen {
+			lines[i] = ln[:tooltipMaxLineLen] + "…"
+			trimmed = true
+		}
+	}
+	if trimmed {
+		lines = append(lines, "…")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (a *App) showTooltip(text string, spans [][2]int, at fyne.Position) {

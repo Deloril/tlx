@@ -32,6 +32,7 @@ type bigTable struct {
 	cols        func() int              // column count
 	onLeave     func()                  // called when the pointer leaves the table
 	onSecondary func(pos fyne.Position) // called on right-click, with canvas position
+	onPress     func()                  // called on each left mouse-down, for double-click timing
 	primed      bool
 	lastPos     fyne.Position
 	// lastMod carries the keyboard modifiers of the most recent mouse press to
@@ -82,6 +83,11 @@ func (b *bigTable) MouseOut() {
 // press is forwarded to the embedded table only if it handles one.
 func (b *bigTable) MouseDown(e *desktop.MouseEvent) {
 	b.lastMod = e.Modifier
+	// Fire the press hook on a plain primary click so the app can spot a
+	// double-click; the hover row/col it reads are already current.
+	if e.Button == desktop.MouseButtonPrimary && e.Modifier == 0 && b.onPress != nil {
+		b.onPress()
+	}
 	if m, ok := any(&b.Table).(desktop.Mouseable); ok {
 		m.MouseDown(e)
 	}
@@ -168,6 +174,7 @@ func (a *App) newTable() *bigTable {
 	}
 	t.onLeave = a.hideTooltip
 	t.onSecondary = a.onTableSecondary
+	t.onPress = a.onTablePress
 	for i, ci := range a.visible {
 		t.SetColumnWidth(i, a.cols[ci].width)
 	}

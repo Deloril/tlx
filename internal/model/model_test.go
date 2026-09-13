@@ -360,6 +360,43 @@ func TestColumnCondFilter(t *testing.T) {
 	}
 }
 
+func TestColumnCondNeg(t *testing.T) {
+	idx := openT(t, "host,event\nalpha,login\nbravo,logout\nalpha,cleared\ncharlie,signin\n")
+	v := NewView(idx, NewSession(idx.Path()))
+
+	// event does NOT contain "log" — drops the login and logout rows.
+	if err := v.Apply(FilterSpec{Conds: []ColumnCond{
+		{Column: 1, Values: []string{"log"}, Neg: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 2 {
+		t.Fatalf("event NOT containing log -> %d rows, want 2", v.Len())
+	}
+
+	// Excluding via regex works too: event does not match /log/.
+	if err := v.Apply(FilterSpec{Conds: []ColumnCond{
+		{Column: 1, Values: []string{"log"}, Regexp: true, Neg: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 2 {
+		t.Fatalf("event NOT matching /log/ -> %d rows, want 2", v.Len())
+	}
+
+	// A negated condition combines with a positive one under AND: host=alpha AND
+	// event does not contain "login" -> only the alpha/cleared row (master 2).
+	if err := v.Apply(FilterSpec{Conds: []ColumnCond{
+		{Column: 0, Values: []string{"alpha"}},
+		{Column: 1, Values: []string{"login"}, Neg: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 1 || v.Master(0) != 2 {
+		t.Fatalf("alpha AND NOT login -> len=%d master0=%d, want 1 row (master 2)", v.Len(), v.Master(0))
+	}
+}
+
 func TestColumnCondAllValues(t *testing.T) {
 	idx := openT(t, "msg\nfailed login attempt\nfailed logout\nsuccess login\n")
 	v := NewView(idx, NewSession(idx.Path()))
