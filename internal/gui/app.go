@@ -516,6 +516,8 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 
 	tagBtn := widget.NewButtonWithIcon("Tag", theme.ContentAddIcon(), a.tagSelected)
 	commentBtn := widget.NewButtonWithIcon("Comment", theme.MailComposeIcon(), a.commentSelected)
+	detailsBtn := widget.NewButtonWithIcon("Details", theme.InfoIcon(), a.revealDetailsPanel)
+	notesBtn := widget.NewButtonWithIcon("Notes", theme.DocumentIcon(), a.revealNotesPanel)
 	viewsBtn := widget.NewButtonWithIcon("Views", theme.ListIcon(), a.toggleViewsSidebar)
 	filterBtn := widget.NewButtonWithIcon("Filter", theme.SearchIcon(), a.revealFilterPanel)
 	clearBtn := widget.NewButtonWithIcon("Clear filters", theme.ContentClearIcon(), a.clearFilter)
@@ -529,7 +531,7 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 
 	left := container.NewHBox(viewsBtn, openBtn, saveBtn, exportBtn, widget.NewSeparator(),
 		widget.NewLabel("Mode:"), a.modeSelect, widget.NewSeparator(),
-		tagBtn, commentBtn, widget.NewSeparator(), filterBtn, a.filterRowBtn, clearBtn)
+		tagBtn, commentBtn, detailsBtn, notesBtn, widget.NewSeparator(), filterBtn, a.filterRowBtn, clearBtn)
 	right := container.NewHBox(sidebarBtn, a.themeBtn, colsBtn, helpBtn)
 	return container.NewBorder(nil, nil, left, right, nil)
 }

@@ -433,6 +433,29 @@ func (a *App) setSidebar(show bool) {
 	a.split.Refresh()
 }
 
+// revealPanel brings a right-dock panel into view: it shows the dock if hidden
+// (unless the panel has floated into its own window), then expands or raises it.
+// Mirrors revealFilterPanel for panels that have nothing to type into.
+func (a *App) revealPanel(p *dockPanel) {
+	if a.idx == nil || p == nil {
+		return
+	}
+	if !a.sidebarVisible && !p.floating {
+		a.setSidebar(true)
+	}
+	p.focus() // expands if docked, raises the window if floating
+}
+
+// revealDetailsPanel drops straight to the Details panel and fills it with the
+// current selection, so the toolbar button works even when nothing changed the
+// selection since the dock was last hidden.
+func (a *App) revealDetailsPanel() {
+	a.revealPanel(a.detailPanel)
+	if m := a.selectedMaster(); m >= 0 {
+		a.showDetail(m)
+	}
+}
+
 // toggleViewsSidebar shows or hides the left sidebar (Views/Case/IOC sections).
 func (a *App) toggleViewsSidebar() {
 	a.setViewsSidebar(!a.viewsSidebarVisible)
