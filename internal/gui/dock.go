@@ -30,6 +30,7 @@ type dockPanel struct {
 
 	expanded bool
 	floating bool
+	onTop    bool // float window pinned above others; reset each time it floats
 	win      fyne.Window
 
 	// onChange fires after any dock/float/collapse change so the owner can
@@ -108,6 +109,7 @@ func (p *dockPanel) float() {
 		return
 	}
 	p.floating = true
+	p.onTop = false // a fresh OS window starts at the normal level
 	p.bodyWrap.Objects = nil
 	p.bodyWrap.Refresh()
 	p.win = p.app.fyne.NewWindow(p.title + " — tlx")
@@ -124,9 +126,10 @@ func (p *dockPanel) float() {
 // free-floating window.
 func (p *dockPanel) floatContent() fyne.CanvasObject {
 	dockBtn := widget.NewButtonWithIcon("Dock to right", theme.NavigateBackIcon(), p.dock)
+	topBtn := newAlwaysOnTopButton(p.win, &p.onTop)
 	bar := container.NewBorder(nil, nil,
 		widget.NewLabelWithStyle(p.title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		dockBtn, nil)
+		container.NewHBox(topBtn, dockBtn), nil)
 	return container.NewBorder(bar, nil, nil, nil, container.NewVScroll(p.body))
 }
 

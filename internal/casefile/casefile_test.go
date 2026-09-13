@@ -581,6 +581,54 @@ func TestNotes(t *testing.T) {
 	}
 }
 
+func TestReorderNotes(t *testing.T) {
+	c := newCase(t)
+	idx := memIndex([]string{"Timestamp", "Msg"}, [][]string{{"2026-09-01T08:12:03Z", "x"}})
+	tl, err := c.AddTimeline("t1", idx, "2026-09-11T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, txt := range []string{"one", "two", "three"} {
+		n, err := c.AddNote(tl.ID, NoteArtifact, txt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, n.ID)
+	}
+	// Insertion order first.
+	got, err := c.Notes(tl.ID, NoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].ID != ids[0] || got[2].ID != ids[2] {
+		t.Fatalf("initial order = %+v, want insertion order", got)
+	}
+	// Reverse and confirm it sticks on a fresh read.
+	if err := c.ReorderNotes([]int64{ids[2], ids[1], ids[0]}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = c.Notes(tl.ID, NoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].ID != ids[2] || got[1].ID != ids[1] || got[2].ID != ids[0] {
+		t.Fatalf("reordered = %+v, want reversed", got)
+	}
+	// A note added after a reorder lands at the end (largest position).
+	n4, err := c.AddNote(tl.ID, NoteArtifact, "four")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = c.Notes(tl.ID, NoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[len(got)-1].ID != n4.ID {
+		t.Fatalf("new note not last: order = %+v", got)
+	}
+}
+
 func TestTimelineComment(t *testing.T) {
 	c := newCase(t)
 	idx := memIndex([]string{"Timestamp", "Msg"}, [][]string{{"2026-09-01T08:12:03Z", "x"}})

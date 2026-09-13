@@ -144,6 +144,45 @@ func (a *App) setNoteDone(n noteItem, done bool) error {
 	return nil
 }
 
+// reorderNotes persists a new display order for one kind's notes. In a case it
+// writes note positions; for a standalone timeline it rewrites the stored slice,
+// reordering this kind's notes among their existing slots and leaving the other
+// kind's notes where they are.
+func (a *App) reorderNotes(kind string, orderedIDs []int64) {
+	if a.cse != nil {
+		if err := a.cse.ReorderNotes(orderedIDs); err != nil {
+			a.showError(err)
+		}
+		return
+	}
+	notes := a.standaloneNotes()
+	byID := map[int64]storedNote{}
+	for _, n := range notes {
+		if n.Kind == kind {
+			byID[n.ID] = n
+		}
+	}
+	reordered := make([]storedNote, 0, len(orderedIDs))
+	for _, id := range orderedIDs {
+		if n, ok := byID[id]; ok {
+			reordered = append(reordered, n)
+		}
+	}
+	out := make([]storedNote, 0, len(notes))
+	ki := 0
+	for _, n := range notes {
+		if n.Kind != kind {
+			out = append(out, n)
+			continue
+		}
+		if ki < len(reordered) {
+			out = append(out, reordered[ki])
+			ki++
+		}
+	}
+	a.storeStandaloneNotes(out)
+}
+
 func (a *App) deleteNote(n noteItem) error {
 	if a.cse != nil {
 		return a.cse.DeleteNote(n.ID)
@@ -233,12 +272,18 @@ func (a *App) refreshNotesSection() {
 		items := a.notes(kind)
 		if len(items) == 0 {
 			box.Add(widget.NewLabel("(none)"))
+			box.Refresh()
+			return
 		}
-		for i, n := range items {
-			if i > 0 {
-				box.Add(widget.NewSeparator())
-			}
-			box.Add(a.noteRow(n))
+		// Each row is a draggableRow so it can be dragged to reorder. A separator
+		// rides along inside each row's content, so it moves with the row and the
+		// box holds nothing but rows — which keeps the reorder index maths simple.
+		for _, n := range items {
+			content := container.NewVBox(a.noteRow(n), widget.NewSeparator())
+			row := newDraggableRow(n.ID, content)
+			row.onDrag = func(r *draggableRow, dy float32) { a.dragNoteRow(box, r, dy) }
+			row.onDrop = func() { a.commitNotesOrder(box, kind) }
+			box.Add(row)
 		}
 		box.Refresh()
 	}
@@ -310,7 +355,10 @@ func (a *App) noteRow(n noteItem) fyne.CanvasObject {
 		right.Add(iocBtn)
 	}
 	right.Add(del)
-	return container.NewBorder(nil, nil, chk, right, label)
+	// A grip on the left hints that the row can be dragged to reorder (the whole
+	// row is the drag target; see draggableRow).
+	grip := widget.NewIcon(theme.MenuIcon())
+	return container.NewBorder(nil, nil, container.NewHBox(grip, chk), right, label)
 }
 
 // filterByString filters the current view to rows containing s anywhere, by

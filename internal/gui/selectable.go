@@ -86,5 +86,12 @@ func (s *selectableLabel) TappedSecondary(e *fyne.PointEvent) {
 	if len(items) == 0 {
 		return
 	}
-	widget.NewPopUpMenu(fyne.NewMenu("", items...), s.app.win.Canvas()).ShowAtPosition(e.AbsolutePosition)
+	// Show the menu on the canvas this label actually lives in — a pop-out window
+	// has its own, so using the main window's canvas would draw the menu back in
+	// the main view, sometimes hidden behind the pop-out.
+	cv := fyne.CurrentApp().Driver().CanvasForObject(s)
+	if cv == nil {
+		cv = s.app.win.Canvas()
+	}
+	widget.NewPopUpMenu(fyne.NewMenu("", items...), cv).ShowAtPosition(e.AbsolutePosition)
 }

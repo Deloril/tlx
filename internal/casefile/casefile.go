@@ -232,6 +232,11 @@ func (c *Case) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_notes_tl ON notes(timeline_id);`); err != nil {
 		return fmt.Errorf("create notes: %w", err)
 	}
+	// Manual note ordering (drag to reorder). Old rows default to position 0 and
+	// fall back to id order, which is their original insertion order.
+	if err := c.addColumnIfMissing("notes", "position", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -760,10 +765,12 @@ const (
 	NoteTime     = "time"
 )
 
-// Notes returns a timeline's notes of the given kind, oldest first (insertion order).
+// Notes returns a timeline's notes of the given kind in display order: by the
+// manual position first, then id (insertion order) as a tie-break for notes that
+// have never been reordered.
 func (c *Case) Notes(timelineID int64, kind string) ([]Note, error) {
 	rows, err := c.db.Query(`SELECT id,kind,text,done FROM notes
-		WHERE timeline_id=? AND kind=? ORDER BY id ASC`, timelineID, kind)
+		WHERE timeline_id=? AND kind=? ORDER BY position ASC, id ASC`, timelineID, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -792,8 +799,14 @@ func (c *Case) AddNote(timelineID int64, kind, text string) (Note, error) {
 	if text == "" {
 		return Note{}, fmt.Errorf("note text is required")
 	}
-	res, err := c.db.Exec(`INSERT INTO notes(timeline_id,kind,text,done) VALUES(?,?,?,0)`,
-		timelineID, kind, text)
+	// Append at the end of this kind's list: one past the current max position.
+	var pos int64
+	if err := c.db.QueryRow(`SELECT COALESCE(MAX(position),-1)+1 FROM notes
+		WHERE timeline_id=? AND kind=?`, timelineID, kind).Scan(&pos); err != nil {
+		return Note{}, err
+	}
+	res, err := c.db.Exec(`INSERT INTO notes(timeline_id,kind,text,done,position) VALUES(?,?,?,0,?)`,
+		timelineID, kind, text, pos)
 	if err != nil {
 		return Note{}, err
 	}
@@ -818,6 +831,28 @@ func (c *Case) SetNoteDone(id int64, done bool) error {
 func (c *Case) DeleteNote(id int64) error {
 	_, err := c.db.Exec(`DELETE FROM notes WHERE id=?`, id)
 	return err
+}
+
+// ReorderNotes writes a new display order for the given note ids, assigning each
+// its position by index. Ids not in the slice are left untouched; callers pass
+// the full ordered id list for one timeline+kind.
+func (c *Case) ReorderNotes(ids []int64) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE notes SET position=? WHERE id=?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for i, id := range ids {
+		if _, err := stmt.Exec(int64(i), id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Master returns every tagged row across all timelines, sorted chronologically

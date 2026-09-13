@@ -530,9 +530,11 @@ func (a *App) onCellDoubleClick(row, col int) {
 func (a *App) showCellPopout(title string, master int, ref model.ColumnRef) {
 	a.hideTooltip()
 	body := newSelectableLabel(a, a.valueOf(master, ref))
-	header := widget.NewLabelWithStyle(
+	label := widget.NewLabelWithStyle(
 		fmt.Sprintf("%s — row %d", title, master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	w := a.fyne.NewWindow(title + " — tlx")
+	onTop := false
+	header := container.NewBorder(nil, nil, label, newAlwaysOnTopButton(w, &onTop), nil)
 	w.SetContent(container.NewBorder(header, nil, nil, nil, container.NewVScroll(body)))
 	w.Resize(fyne.NewSize(520, 360))
 	w.Show()
@@ -575,6 +577,7 @@ func (a *App) hoverCell(id widget.TableCellID, at fyne.Position) {
 const (
 	tooltipMaxLines   = 15  // most rows the hover box will show
 	tooltipMaxLineLen = 300 // longest single line, so one line can't wrap off-screen
+	tooltipWrapWidth  = 460 // width the hover text wraps at
 )
 
 // capTooltipText limits the hover text to the first tooltipMaxLines lines and
@@ -617,7 +620,13 @@ func (a *App) showTooltip(text string, spans [][2]int, at fyne.Position) {
 		a.hoverText.Segments = []widget.RichTextSegment{&widget.TextSegment{Text: text}}
 	}
 	a.hoverText.Wrapping = fyne.TextWrapWord
-	a.hoverText.Resize(fyne.NewSize(460, a.hoverText.MinSize().Height))
+	// RichText caches its MinSize and only recomputes row wrapping (against its
+	// current width) on Refresh. Assigning Segments alone leaves both stale, so
+	// without this the box keeps the previous cell's height. Pin the wrap width,
+	// Refresh to recompute at that width, then measure.
+	a.hoverText.Resize(fyne.NewSize(tooltipWrapWidth, a.hoverText.Size().Height))
+	a.hoverText.Refresh()
+	a.hoverText.Resize(fyne.NewSize(tooltipWrapWidth, a.hoverText.MinSize().Height))
 
 	sz := a.hoverText.Size()
 	pad := float32(6)
