@@ -1,3 +1,5 @@
+_proper up front, this application is pure AI slop. It's been developed with Claude, and until you do, no human has reviewed the code. Appears to work great, but stating this up front._
+
 # Timeline explorer
 
 > **This code is entirely AI-generated.** Every line was written by an AI
