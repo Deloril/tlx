@@ -287,8 +287,16 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 	}
 	col := a.cols[a.visible[id.Col]]
 	ref := col.ref
-	title := col.title
-	if arrow := a.sortArrow(ref); arrow != "" {
+	// Truncate the title to the column width so a column narrowed below its title
+	// hides the overflow instead of spilling into the next header. Reserve room
+	// for the sort arrow when one is showing.
+	arrow := a.sortArrow(ref)
+	avail := col.width - headerPad
+	if arrow != "" {
+		avail -= sortArrowW
+	}
+	title := ellipsizeToWidth(col.title, avail)
+	if arrow != "" {
 		title += " " + arrow
 	}
 	btn.SetText(title)

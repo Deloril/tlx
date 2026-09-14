@@ -300,9 +300,48 @@ func (a *App) buildColumns() {
 		if i < len(a.colNames) && a.colNames[i] != "" {
 			title = a.colNames[i]
 		}
-		a.cols = append(a.cols, column{ref: model.ColumnRef(i), title: title, visible: true, width: colWidth(title)})
+		a.cols = append(a.cols, column{ref: model.ColumnRef(i), title: title, visible: true, width: fitColWidth(title)})
 	}
 	a.rebuildVisible()
+}
+
+// Header text metrics. headerPad covers the sort button's inner padding either
+// side of the label; sortArrowW reserves room for the " ▲"/"▼" sort indicator so
+// sorting a column never truncates its title.
+const (
+	headerPad  = 24
+	sortArrowW = 18
+)
+
+// fitColWidth is the starting width for a column: the by-name default, widened if
+// the title text (plus padding and sort-arrow room) needs more, so the header
+// never spills into the next column on open.
+func fitColWidth(title string) float32 {
+	base := colWidth(title)
+	need := fyne.MeasureText(title, theme.TextSize(), fyne.TextStyle{}).Width + headerPad + sortArrowW
+	if need > base {
+		return need
+	}
+	return base
+}
+
+// ellipsizeToWidth trims s to fit max pixels, appending "…" when it has to cut.
+// Used to keep a header title inside a column narrowed below its natural width.
+func ellipsizeToWidth(s string, max float32) string {
+	if max <= 0 {
+		return ""
+	}
+	if fyne.MeasureText(s, theme.TextSize(), fyne.TextStyle{}).Width <= max {
+		return s
+	}
+	r := []rune(s)
+	for len(r) > 1 {
+		r = r[:len(r)-1]
+		if fyne.MeasureText(string(r)+"…", theme.TextSize(), fyne.TextStyle{}).Width <= max {
+			return string(r) + "…"
+		}
+	}
+	return "…"
 }
 
 // colWidth picks a starting width for a column by its header name.
