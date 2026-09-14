@@ -265,34 +265,82 @@ func (a *App) bulkComment() {
 
 // Detail pane: full row, tags, comment; editable per mode.
 
+// detailField is one reusable per-column widget in the Details panel. The panel
+// skeleton is built once per shape (see detailSig) and these are updated in
+// place on each selection: sel is set in read-only-ish modes, ent in WorldWrite.
+type detailField struct {
+	ref model.ColumnRef
+	sel *selectableLabel
+	ent *growEntry
+}
+
+// showDetail shows master's row in the Details panel. The skeleton — the
+// accordion and one field widget per column — is rebuilt only when the shape
+// changes (a different file, mode, or column set); otherwise the existing
+// widgets are updated in place, so selecting a row does not reconstruct dozens
+// of Entry widgets and lag a wide timeline.
 func (a *App) showDetail(master int) {
+	if a.idx == nil || a.sess == nil {
+		return
+	}
 	if _, err := a.idx.Row(master); err != nil {
 		a.detail.Objects = []fyne.CanvasObject{widget.NewLabel("error: " + err.Error())}
 		a.detail.Refresh()
+		a.detailShape = "" // force a rebuild once a valid row is shown again
 		return
 	}
-	mode := a.sess.Mode()
+	if sig := a.detailSig(); sig != a.detailShape || a.detailAcc == nil {
+		a.buildDetail()
+		a.detailShape = sig
+	}
+	a.detailMaster = master
+	a.refreshDetail(master)
+}
 
-	// Each field is an accordion section so it can be collapsed independently.
-	// MultiOpen lets any combination be open at once; OpenAll below keeps the
-	// familiar "everything visible" starting state.
+// detailSig captures everything that changes the panel's structure rather than
+// its values: the open file, mode, master vs single-timeline view, and the
+// column set with adopted columns marked out.
+func (a *App) detailSig() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\x1f%d\x1f%t\x1f%t\x1f", a.idx.Path(), a.sess.Mode(), a.masterMode, a.annotCols)
+	for i, h := range a.idx.Headers() {
+		if a.annotCols && a.adopted.Has(i) {
+			b.WriteByte('-') // skipped when building, but a change must still re-sign
+		} else {
+			b.WriteString(h)
+		}
+		b.WriteByte('\x1e')
+	}
+	return b.String()
+}
+
+// buildDetail constructs the Details panel skeleton for the current shape and
+// stores the reusable widgets. Field values are filled by refreshDetail. Each
+// field is a collapsible accordion section; MultiOpen with OpenAll keeps the
+// familiar "everything visible" starting state.
+func (a *App) buildDetail() {
+	a.detailFields = a.detailFields[:0]
+	a.detailHeadBtn = nil
+	a.detailCommentEntry = nil
+	a.detailCommentLabel = nil
+
 	acc := widget.NewAccordion()
 	acc.MultiOpen = true
+	a.detailAcc = acc
 
-	// Master view: the row is a tagged entry from another timeline. Offer to
-	// jump to it in its own timeline, and skip the annotation controls below
-	// (they belong to a real session, not this read-only summary).
-	if a.masterMode && master >= 0 && master < len(a.masterEntries) {
-		e := a.masterEntries[master]
-		head := []fyne.CanvasObject{
-			widget.NewLabelWithStyle(e.Timeline+" — row "+fmt.Sprint(e.Row+1),
-				fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-			widget.NewButtonWithIcon("Open in "+e.Timeline, theme.NavigateNextIcon(),
-				func() { a.openMasterSource(a.selRow) }),
-		}
+	a.detailHeadLabel = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	head := []fyne.CanvasObject{a.detailHeadLabel}
+
+	// Master view: a read-only summary of a tagged row from another timeline, with
+	// a jump button and no annotation controls.
+	if a.masterMode {
+		a.detailHeadBtn = widget.NewButtonWithIcon("", theme.NavigateNextIcon(),
+			func() { a.openMasterSource(a.selRow) })
+		head = append(head, a.detailHeadBtn)
 		for i, h := range a.idx.Headers() {
-			val := a.valueOf(master, model.ColumnRef(i))
-			acc.Append(widget.NewAccordionItem(h, newSelectableLabel(a, master, val)))
+			sel := newSelectableLabel(a, 0, "")
+			a.detailFields = append(a.detailFields, detailField{ref: model.ColumnRef(i), sel: sel})
+			acc.Append(widget.NewAccordionItem(h, sel))
 		}
 		acc.OpenAll()
 		a.detail.Objects = append(head, acc)
@@ -300,34 +348,20 @@ func (a *App) showDetail(master int) {
 		return
 	}
 
-	// Tags section, each chip prefixed with its colour.
-	tagsRow := container.NewHBox()
-	for _, t := range a.sess.Tags(master) {
-		t := t
-		hex, _ := a.sess.TagColor(t)
-		tagsRow.Add(colorSquare(hex))
-		if mode != model.ReadOnly {
-			tagsRow.Add(widget.NewButtonWithIcon(t, theme.CancelIcon(), func() {
-				a.sess.RemoveTag(master, t)
-				a.showDetail(master)
-				a.refreshTable()
-			}))
-		} else {
-			tagsRow.Add(widget.NewLabel("[" + t + "]"))
-		}
-	}
-	if mode != model.ReadOnly {
-		tagsRow.Add(widget.NewButtonWithIcon("", theme.ContentAddIcon(), a.tagSelected))
-	}
-	acc.Append(widget.NewAccordionItem("Tags", tagsRow))
+	mode := a.sess.Mode()
+
+	// Tags section: a container refreshDetail repopulates per row.
+	a.detailTagsBox = container.NewHBox()
+	acc.Append(widget.NewAccordionItem("Tags", a.detailTagsBox))
 
 	// Comment section.
 	if mode == model.ReadOnly {
-		acc.Append(widget.NewAccordionItem("Comment", widget.NewLabel(a.sess.Comment(master))))
+		a.detailCommentLabel = widget.NewLabel("")
+		acc.Append(widget.NewAccordionItem("Comment", a.detailCommentLabel))
 	} else {
 		ce, ceBox := newResizableEntry(3)
-		ce.SetText(a.sess.Comment(master))
-		ce.OnSubmitted = func(s string) { a.sess.SetComment(master, s); a.refreshTable() }
+		ce.OnSubmitted = func(s string) { a.sess.SetComment(a.detailMaster, s); a.refreshTable() }
+		a.detailCommentEntry = ce
 		body := container.NewVBox(
 			widget.NewLabel("Shift+Enter for newline, Enter to save:"), ceBox)
 		acc.Append(widget.NewAccordionItem("Comment", body))
@@ -336,35 +370,94 @@ func (a *App) showDetail(master int) {
 	// One section per data column. Adopted tag/comment columns are shown as the
 	// Tags and Comment sections above, not repeated here.
 	for i, h := range a.idx.Headers() {
-		i := i
 		if a.annotCols && a.adopted.Has(i) {
 			continue
 		}
-		val := a.valueOf(master, model.ColumnRef(i))
-		var body fyne.CanvasObject
+		ref := model.ColumnRef(i)
 		if mode == model.WorldWrite {
+			col := i
 			ge, geBox := newResizableEntry(1)
-			ge.SetText(val)
 			ge.OnSubmitted = func(s string) {
-				if err := a.sess.SetCell(master, i, s); err != nil {
+				if err := a.sess.SetCell(a.detailMaster, col, s); err != nil {
 					a.showError(err)
 					return
 				}
 				a.refreshTable()
 			}
-			body = geBox
+			a.detailFields = append(a.detailFields, detailField{ref: ref, ent: ge})
+			acc.Append(widget.NewAccordionItem(h, geBox))
 		} else {
-			body = newSelectableLabel(a, master, val)
+			sel := newSelectableLabel(a, 0, "")
+			a.detailFields = append(a.detailFields, detailField{ref: ref, sel: sel})
+			acc.Append(widget.NewAccordionItem(h, sel))
 		}
-		acc.Append(widget.NewAccordionItem(h, body))
 	}
 	acc.OpenAll()
-
-	head := []fyne.CanvasObject{
-		widget.NewLabelWithStyle(fmt.Sprintf("Row %d", master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-	}
 	a.detail.Objects = append(head, acc)
 	a.detail.Refresh()
+}
+
+// refreshDetail updates the stored Details-panel widgets for master without
+// rebuilding them. The skeleton must already match the current shape.
+func (a *App) refreshDetail(master int) {
+	if a.masterMode {
+		if master >= 0 && master < len(a.masterEntries) {
+			e := a.masterEntries[master]
+			a.detailHeadLabel.SetText(e.Timeline + " — row " + fmt.Sprint(e.Row+1))
+			if a.detailHeadBtn != nil {
+				a.detailHeadBtn.SetText("Open in " + e.Timeline)
+			}
+		}
+		for _, f := range a.detailFields {
+			f.sel.master = master
+			f.sel.SetText(a.valueOf(master, f.ref))
+		}
+		return
+	}
+
+	a.detailHeadLabel.SetText(fmt.Sprintf("Row %d", master+1))
+	a.refreshDetailTags(master)
+	if a.detailCommentLabel != nil {
+		a.detailCommentLabel.SetText(a.sess.Comment(master))
+	}
+	if a.detailCommentEntry != nil {
+		a.detailCommentEntry.SetText(a.sess.Comment(master))
+	}
+	for _, f := range a.detailFields {
+		val := a.valueOf(master, f.ref)
+		if f.sel != nil {
+			f.sel.master = master
+			f.sel.SetText(val)
+		} else if f.ent != nil {
+			f.ent.SetText(val)
+		}
+	}
+}
+
+// refreshDetailTags repopulates the Tags section for master. It is a handful of
+// chips, so it is rebuilt each selection rather than diffed.
+func (a *App) refreshDetailTags(master int) {
+	box := a.detailTagsBox
+	box.Objects = box.Objects[:0]
+	mode := a.sess.Mode()
+	for _, t := range a.sess.Tags(master) {
+		t := t
+		hex, _ := a.sess.TagColor(t)
+		box.Add(colorSquare(hex))
+		if mode != model.ReadOnly {
+			box.Add(widget.NewButtonWithIcon(t, theme.CancelIcon(), func() {
+				a.sess.RemoveTag(master, t)
+				a.showDetail(master)
+				a.refreshTable()
+			}))
+		} else {
+			box.Add(widget.NewLabel("[" + t + "]"))
+		}
+	}
+	if mode != model.ReadOnly {
+		box.Add(widget.NewButtonWithIcon("", theme.ContentAddIcon(), a.tagSelected))
+	}
+	box.Refresh()
 }
 
 // File operations.

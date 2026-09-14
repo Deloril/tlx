@@ -84,6 +84,19 @@ type App struct {
 	rightDockOffset float64
 	detail          *fyne.Container // detail panel body, filled by showDetail
 
+	// Reusable Details-panel widgets. showDetail builds the field widgets once per
+	// "shape" (mode + column set, see detailShape) and updates their text on each
+	// selection, so clicking around does not reconstruct dozens of Entry widgets.
+	detailShape        string
+	detailMaster       int
+	detailAcc          *widget.Accordion
+	detailHeadLabel    *widget.Label
+	detailHeadBtn      *widget.Button   // master view "Open in <timeline>"; nil otherwise
+	detailTagsBox      *fyne.Container  // Tags section body, repopulated per row
+	detailCommentEntry *growEntry       // writable comment box; nil in read-only
+	detailCommentLabel *widget.Label    // read-only comment; nil when writable
+	detailFields       []detailField
+
 	// Investigator's notes (per-timeline Artifacts/Times) and the timeline
 	// comments field, both in the right dock.
 	notesArtifactsBox *fyne.Container
