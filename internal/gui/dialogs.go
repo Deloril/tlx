@@ -46,6 +46,12 @@ func (a *App) toggleTheme() {
 		a.themeVariant = theme.VariantDark
 	}
 	a.fyne.Settings().SetTheme(newCompactTheme(a.themeVariant))
+	// Static canvas fills don't track a theme change (same reason the hover box
+	// re-reads its colours). Re-apply the status-bar fill for the new variant.
+	if a.statusBG != nil {
+		a.statusBG.FillColor = a.fyne.Settings().Theme().Color(theme.ColorNameInputBackground, a.themeVariant)
+		a.statusBG.Refresh()
+	}
 	a.updateThemeButton()
 }
 

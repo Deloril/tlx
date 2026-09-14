@@ -122,6 +122,7 @@ type App struct {
 	statusRows   *widget.Label
 	statusFilter *widget.Label
 	statusDirty  *widget.Label
+	statusBG     *canvas.Rectangle // status-bar fill; re-coloured on theme toggle
 
 	selRow int // active view row (drives detail pane and inline edit), -1 if none
 	selCol int // active table column, -1 if none
@@ -560,10 +561,10 @@ func (a *App) buildStatusBar() fyne.CanvasObject {
 	a.statusRows = widget.NewLabel("")
 	a.statusFilter = widget.NewLabel("")
 	a.statusDirty = widget.NewLabel("")
-	bg := canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
+	a.statusBG = canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
 	bar := container.NewHBox(a.statusMode, widget.NewSeparator(), a.statusRows,
 		widget.NewSeparator(), a.statusFilter, widget.NewSeparator(), a.statusDirty)
-	return container.NewStack(bg, bar)
+	return container.NewStack(a.statusBG, bar)
 }
 
 func (a *App) refreshStatus() {
