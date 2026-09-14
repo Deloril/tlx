@@ -208,7 +208,16 @@ func (a *App) showSelectionMenu(pos fyne.Position) {
 		a.clearSelection()
 		a.refreshTable()
 	})
-	items := []*fyne.MenuItem{tag, comment}
+	var items []*fyne.MenuItem
+	// Details pops out the full contents of the right-clicked cell, the same
+	// window a double-click opens. Capture the cell now so it survives the pointer
+	// moving onto the menu.
+	if dr, dc := a.hoverRow, a.hoverCol; dr >= 0 && dc >= 0 {
+		items = append(items,
+			fyne.NewMenuItem("Details", func() { a.onCellDoubleClick(dr, dc) }),
+			fyne.NewMenuItemSeparator())
+	}
+	items = append(items, tag, comment)
 	if ni := a.noteMenuItems(); len(ni) > 0 {
 		items = append(items, fyne.NewMenuItemSeparator())
 		items = append(items, ni...)
