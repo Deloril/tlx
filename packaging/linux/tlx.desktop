@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=tlx
+GenericName=Timeline viewer
+Comment=Forensic timeline CSV viewer
+Exec=tlx
+Icon=tlx
+Categories=Utility;
+Terminal=false
+Keywords=forensics;timeline;csv;dfir;

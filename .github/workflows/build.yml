@@ -21,7 +21,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            asset: tlx-linux-amd64
+            asset: tlx-x86_64.AppImage
           - os: macos-latest
             asset: tlx-macos-universal.zip
           - os: windows-latest
@@ -50,10 +50,30 @@ jobs:
       - name: Test engine
         run: go test ./internal/model/...
 
-      - name: Build (Linux)
+      # Package Linux as an AppImage: a single double-clickable file that carries
+      # the icon and .desktop entry, so the file manager shows the icon and
+      # launches it without an install step. The raw binary lives at usr/bin/tlx
+      # inside; extract with --appimage-extract if you want it on its own.
+      - name: Build (Linux AppImage)
         if: matrix.os == 'ubuntu-latest'
         shell: bash
-        run: go build -ldflags "-s -w" -o "$ASSET" ./cmd/tlx
+        run: |
+          APPDIR=tlx.AppDir
+          mkdir -p "$APPDIR/usr/bin" \
+                   "$APPDIR/usr/share/applications" \
+                   "$APPDIR/usr/share/icons/hicolor/1024x1024/apps"
+          go build -ldflags "-s -w" -o "$APPDIR/usr/bin/tlx" ./cmd/tlx
+          cp packaging/linux/AppRun    "$APPDIR/AppRun"
+          cp packaging/linux/tlx.desktop "$APPDIR/tlx.desktop"
+          cp packaging/linux/tlx.desktop "$APPDIR/usr/share/applications/tlx.desktop"
+          cp internal/gui/icon.png     "$APPDIR/tlx.png"
+          cp internal/gui/icon.png     "$APPDIR/usr/share/icons/hicolor/1024x1024/apps/tlx.png"
+          chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/tlx"
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          # --appimage-extract-and-run avoids needing FUSE on the runner.
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$APPDIR" "$ASSET"
 
       # Build a universal binary, then wrap it in a .app bundle so double-clicking
       # opens a windowed app instead of a Terminal session. The bundle is zipped

@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entrypoint: run the bundled binary from wherever the AppImage mounts.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/tlx" "$@"
