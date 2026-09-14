@@ -567,11 +567,12 @@ func (a *App) showCellPopout(title string, master int, ref model.ColumnRef) {
 	label := widget.NewLabelWithStyle(
 		fmt.Sprintf("%s — row %d", title, master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	w := a.fyne.NewWindow(title + " — tlx")
-	onTop := false
+	onTop := true // pop-outs float above the main window by default; the pin toggles it
 	header := container.NewBorder(nil, nil, label, newAlwaysOnTopButton(w, &onTop), nil)
 	w.SetContent(container.NewBorder(header, nil, nil, nil, container.NewVScroll(body)))
 	w.Resize(fyne.NewSize(520, 360))
 	w.Show()
+	applyAlwaysOnTop(w, onTop) // Show() creates the native window; now the handle is live
 }
 
 // Hover tooltip. Rendered as a non-interactive overlay layer inside the content
