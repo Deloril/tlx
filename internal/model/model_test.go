@@ -555,6 +555,45 @@ func TestExportAligned(t *testing.T) {
 	}
 }
 
+// Export always writes comma-delimited CSV even when the source was tab- or
+// otherwise-delimited, and quotes any value containing a comma so a comma-based
+// reader does not split it across columns.
+func TestExportForcesCommaDelimiter(t *testing.T) {
+	// Tab-delimited source with a comma inside a field.
+	idx := openT(t, "host\tcmd\nalpha\tps -enc AAA, -foo\nbravo\tplain\n")
+	if idx.Delimiter() != '\t' {
+		t.Fatalf("setup: delimiter = %q, want tab", idx.Delimiter())
+	}
+	s := NewSession(idx.Path())
+	v := NewView(idx, s)
+
+	dest := filepath.Join(t.TempDir(), "out.csv")
+	if err := Export(v, s, dest); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dest)
+	want := "host,cmd,Tags,Comment\n" +
+		"alpha,\"ps -enc AAA, -foo\",,\n" +
+		"bravo,plain,,\n"
+	if string(got) != want {
+		t.Fatalf("plain export =\n%q\nwant\n%q", got, want)
+	}
+
+	// The aligned exporter forces commas too, quoting the merged value.
+	cols := []AlignedColumn{{Name: "Merged", Sources: []AlignedSource{{Ref: 0, Title: "host"}, {Ref: 1, Title: "cmd"}}}}
+	dest2 := filepath.Join(t.TempDir(), "aligned.csv")
+	if err := ExportAligned(v, s, dest2, "", cols); err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := os.ReadFile(dest2)
+	want2 := "Merged\n" +
+		"\"host: alpha; cmd: ps -enc AAA, -foo;\"\n" +
+		"host: bravo; cmd: plain;\n"
+	if string(got2) != want2 {
+		t.Fatalf("aligned export =\n%q\nwant\n%q", got2, want2)
+	}
+}
+
 // When a source CSV already has Tags/Comment columns that were adopted as the
 // session's annotations, ExportOmitting drops them so the appended Tags/Comment
 // columns do not duplicate the source ones.

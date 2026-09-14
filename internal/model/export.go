@@ -34,7 +34,11 @@ func ExportOmittingWithComment(v *View, s *Session, destPath string, omit map[in
 	defer f.Close()
 
 	w := csv.NewWriter(f)
-	w.Comma = rune(v.idx.Delimiter())
+	// Always write comma-delimited CSV, whatever the source delimiter was. A
+	// tab- or pipe-delimited source left commas in field values unquoted, so the
+	// output (named .csv) split apart in any comma-based reader. csv.Writer quotes
+	// any field containing a comma, quote or newline.
+	w.Comma = ','
 	defer w.Flush()
 
 	if strings.TrimSpace(comment) != "" {
@@ -121,7 +125,7 @@ func ExportAligned(v *View, s *Session, destPath, comment string, cols []Aligned
 	defer f.Close()
 
 	w := csv.NewWriter(f)
-	w.Comma = rune(v.idx.Delimiter())
+	w.Comma = ',' // standard CSV output regardless of source delimiter; see ExportOmittingWithComment
 	defer w.Flush()
 
 	if strings.TrimSpace(comment) != "" {
