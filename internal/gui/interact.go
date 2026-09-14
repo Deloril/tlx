@@ -566,9 +566,21 @@ func (a *App) showCellPopout(title string, master int, ref model.ColumnRef) {
 	body := newSelectableLabel(a, master, a.valueOf(master, ref))
 	label := widget.NewLabelWithStyle(
 		fmt.Sprintf("%s — row %d", title, master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	w := a.fyne.NewWindow(title + " — tlx")
+
+	// Borderless window: no OS title bar or min/max/close buttons. The chrome is
+	// our own — a draggable bar carrying the title, an always-on-top toggle and a
+	// close button.
+	w := a.newPopout(title + " — tlx")
 	onTop := false
-	header := container.NewBorder(nil, nil, label, newAlwaysOnTopButton(w, &onTop), nil)
+	closeBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() { w.Close() })
+	closeBtn.Importance = widget.LowImportance
+	buttons := container.NewHBox(newAlwaysOnTopButton(w, &onTop), closeBtn)
+
+	bg := canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
+	barInner := container.NewBorder(nil, nil, container.NewPadded(label), buttons, nil)
+	bar := newDragBar(container.NewStack(bg, barInner), func() { beginWindowMove(w) })
+	header := container.NewVBox(bar, widget.NewSeparator())
+
 	w.SetContent(container.NewBorder(header, nil, nil, nil, container.NewVScroll(body)))
 	w.Resize(fyne.NewSize(520, 360))
 	w.Show()
