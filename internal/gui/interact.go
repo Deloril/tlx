@@ -11,6 +11,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -23,6 +24,7 @@ type inlineEntry struct {
 	widget.Entry
 	onCommit func(string)
 	onCancel func()
+	onPress  func() // fired on a plain primary press, for double-click timing
 }
 
 func newInlineEntry() *inlineEntry {
@@ -34,6 +36,22 @@ func newInlineEntry() *inlineEntry {
 		}
 	}
 	return e
+}
+
+// MouseDown feeds a plain primary press into the double-click timer before the
+// entry places its caret. Once the first click has opened this editor it covers
+// the cell, so the table never sees the second click; routing it through onPress
+// keeps double-click-to-pop-out working on editable cells (comments, and every
+// column in world-write — the usual case-timeline setup).
+func (e *inlineEntry) MouseDown(me *desktop.MouseEvent) {
+	if me.Button == desktop.MouseButtonPrimary && me.Modifier == 0 && e.onPress != nil {
+		e.onPress()
+	}
+	e.Entry.MouseDown(me)
+}
+
+func (e *inlineEntry) MouseUp(me *desktop.MouseEvent) {
+	e.Entry.MouseUp(me)
 }
 
 func (e *inlineEntry) TypedKey(k *fyne.KeyEvent) {
@@ -492,11 +510,20 @@ func (a *App) setViewsSidebar(show bool) {
 
 const doubleClickInterval = 300 * time.Millisecond
 
-// onTablePress times consecutive presses on the same cell. The hover row/col are
-// current at press time (the pointer is over the cell), so they identify it.
-func (a *App) onTablePress() {
+// onTablePress times a press on the grid. The hover row/col are current at press
+// time (the pointer is over the cell), so they identify the cell.
+func (a *App) onTablePress() { a.onCellPress(a.hoverRow, a.hoverCol) }
+
+// onEditEntryPress times a press on an open inline editor. The editor covers its
+// cell, so it reports the cell being edited rather than the hover position.
+func (a *App) onEditEntryPress() { a.onCellPress(a.editRow, a.editCol) }
+
+// onCellPress times consecutive presses on the same cell and fires a double-click
+// when two land within the interval. Both the grid and an open inline editor feed
+// it, so a double-click still registers when the first click opened an editor
+// that then swallowed the second press.
+func (a *App) onCellPress(row, col int) {
 	now := time.Now()
-	row, col := a.hoverRow, a.hoverCol
 	if row < 0 || col < 0 {
 		a.lastClickAt = time.Time{}
 		return
@@ -511,16 +538,14 @@ func (a *App) onTablePress() {
 	a.lastClickRow, a.lastClickCol = row, col
 }
 
-// onCellDoubleClick pops out a cell's contents, but only for columns that can't
-// be edited inline — an editable cell is already in an edit box by now.
+// onCellDoubleClick pops out a cell's full contents in a read-only window. It
+// works on editable cells too: opening the popout pulls focus off the inline
+// editor, which commits any typed text on the way out.
 func (a *App) onCellDoubleClick(row, col int) {
 	if a.view == nil || row < 0 || row >= a.view.Len() || col < 0 || col >= len(a.visible) {
 		return
 	}
 	c := a.cols[a.visible[col]]
-	if a.cellEditable(c.ref) {
-		return
-	}
 	a.showCellPopout(c.title, a.view.Master(row), c.ref)
 }
 

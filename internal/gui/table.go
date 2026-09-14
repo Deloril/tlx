@@ -210,6 +210,7 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		entry.SetText(val)
 		entry.onCommit = func(s string) { a.commitInlineEdit(master, ref, s) }
 		entry.onCancel = func() { a.cancelInlineEdit() }
+		entry.onPress = a.onEditEntryPress // let a second click here complete a double-click
 		entry.Show()
 		if !a.editFocused {
 			a.editFocused = true
