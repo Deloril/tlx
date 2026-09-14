@@ -142,9 +142,7 @@ func (a *App) newTable() *bigTable {
 	// cells to max(cell, header) template MinSize), so the filter row makes data
 	// rows taller — which is why it is off by default and toggled on demand.
 	t.CreateHeader = func() fyne.CanvasObject {
-		sort := widget.NewButton("", nil)
-		sort.Alignment = widget.ButtonAlignLeading
-		sort.Importance = widget.LowImportance
+		sort := newHeaderButton(a)
 		if !a.showFilters {
 			return container.NewVBox(sort)
 		}
@@ -257,7 +255,7 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 	}
 	// The template is VBox(sort) or VBox(sort, filter, tagBtn); read by position
 	// so the two buttons (sort and the tag drop-down) aren't confused.
-	btn, _ := box.Objects[0].(*widget.Button)
+	btn, _ := box.Objects[0].(*headerButton)
 	var filter *widget.Entry
 	var tagBtn *widget.Button
 	if len(box.Objects) >= 3 {
@@ -267,8 +265,10 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 	if btn == nil {
 		return
 	}
+	btn.pos = id.Col // which column this reused header cell currently shows
 	// Only column headers are shown (ShowHeaderRow); guard other callbacks.
 	if id.Col < 0 || id.Col >= len(a.visible) {
+		btn.pos = -1
 		btn.SetText("")
 		btn.OnTapped = nil
 		if filter != nil {
@@ -336,6 +336,105 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 	filter.OnSubmitted = func(s string) {
 		a.setColFilter(ref, s)
 		a.applySearch()
+	}
+}
+
+// headerButton is the column-title button in the header row. Tapping it sorts
+// the column (OnTapped, set in updateHeader); dragging it sideways reorders the
+// column past its neighbours. A tap and a drag are distinct gestures in Fyne, so
+// the two don't collide: a press that doesn't move fires Tapped, one that moves
+// fires Dragged.
+//
+// The drag state lives on the App, not here, because widget.Table reuses header
+// cells and rebinds them to columns as the grid refreshes — so this instance's
+// pos is overwritten mid-drag. Fyne keeps routing Dragged to the instance the
+// gesture started on regardless, so we capture the starting column once and then
+// track it in App state.
+type headerButton struct {
+	widget.Button
+	app *App
+	pos int // display column this cell currently shows; set in updateHeader
+}
+
+func newHeaderButton(a *App) *headerButton {
+	h := &headerButton{app: a, pos: -1}
+	h.Alignment = widget.ButtonAlignLeading
+	h.Importance = widget.LowImportance
+	h.ExtendBaseWidget(h)
+	return h
+}
+
+func (h *headerButton) Dragged(e *fyne.DragEvent) {
+	a := h.app
+	if !a.dragHdrActive {
+		if h.pos < 0 || h.pos >= len(a.visible) {
+			return
+		}
+		a.dragHdrActive = true
+		a.dragHdrPos = h.pos
+		a.dragHdrAccum = 0
+		a.cancelInlineEdit() // edit coords are display positions; reorder invalidates them
+	}
+	a.dragHdrAccum += e.Dragged.DX
+	if a.dragShiftColumn() {
+		a.table.Refresh()
+	}
+}
+
+func (h *headerButton) DragEnd() {
+	h.app.dragHdrActive = false
+	h.app.dragHdrAccum = 0
+}
+
+// dragShiftColumn swaps the dragged column past a neighbour each time the banked
+// horizontal distance crosses that neighbour's half-width, so the column follows
+// the pointer. It returns whether the order changed.
+func (a *App) dragShiftColumn() bool {
+	changed := false
+	for {
+		p := a.dragHdrPos
+		switch {
+		case a.dragHdrAccum > 0 && p+1 < len(a.visible):
+			w := a.colWidthAt(p + 1)
+			if a.dragHdrAccum < w/2 {
+				return changed
+			}
+			a.swapColumns(p, p+1)
+			a.dragHdrAccum -= w
+			a.dragHdrPos = p + 1
+			changed = true
+		case a.dragHdrAccum < 0 && p > 0:
+			w := a.colWidthAt(p - 1)
+			if a.dragHdrAccum > -w/2 {
+				return changed
+			}
+			a.swapColumns(p, p-1)
+			a.dragHdrAccum += w
+			a.dragHdrPos = p - 1
+			changed = true
+		default:
+			return changed
+		}
+	}
+}
+
+func (a *App) colWidthAt(pos int) float32 {
+	w := a.cols[a.visible[pos]].width
+	if w <= 0 {
+		w = 100 // a sane fallback so a zero-width column can't stall the drag
+	}
+	return w
+}
+
+// swapColumns exchanges two display-adjacent columns by swapping their entries
+// in a.cols (which drives display order via rebuildVisible), then re-applies the
+// column widths so each keeps its own.
+func (a *App) swapColumns(p, q int) {
+	ci, cj := a.visible[p], a.visible[q]
+	a.cols[ci], a.cols[cj] = a.cols[cj], a.cols[ci]
+	a.rebuildVisible()
+	for i, k := range a.visible {
+		a.table.SetColumnWidth(i, a.cols[k].width)
 	}
 }
 

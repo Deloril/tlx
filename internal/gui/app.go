@@ -138,9 +138,19 @@ type App struct {
 	// Double-click detection for the grid. Fyne's Table isn't DoubleTappable and
 	// wiring the interface in would delay every single click by the double-tap
 	// window; instead we time consecutive presses on the same cell ourselves.
-	lastClickAt         time.Time
-	lastClickRow        int
-	lastClickCol        int
+	lastClickAt  time.Time
+	lastClickRow int
+	lastClickCol int
+
+	// Header drag-reorder state. Like the double-click fields, it lives on the App
+	// rather than the header widget: widget.Table rebinds header cells to columns
+	// as it refreshes, so the button under the pointer can't be trusted to still
+	// represent the column being dragged. dragHdrPos is the dragged column's
+	// current display position; dragHdrAccum banks horizontal drag distance since
+	// the last swap.
+	dragHdrActive bool
+	dragHdrPos    int
+	dragHdrAccum  float32
 
 	sidebarVisible      bool // right dock (filter + detail panels)
 	viewsSidebarVisible bool // left sidebar (views + case + IOC sections)
