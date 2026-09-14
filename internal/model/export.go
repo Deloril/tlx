@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/csv"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -89,4 +90,108 @@ func ExportOmittingWithComment(v *View, s *Session, destPath string, omit map[in
 	}
 	w.Flush()
 	return w.Error()
+}
+
+// AlignedSource is one view column feeding an output column of a custom-aligned
+// export. Title is the column's display name, used as the "<title>:" label when
+// the output column merges more than one source.
+type AlignedSource struct {
+	Ref   ColumnRef
+	Title string
+}
+
+// AlignedColumn is one output column of a custom-aligned export: a name and the
+// ordered list of view columns whose values fill it.
+type AlignedColumn struct {
+	Name    string
+	Sources []AlignedSource
+}
+
+// ExportAligned writes v to destPath under a user-defined set of output columns.
+// Each output column pulls from one or more view columns (data columns by index,
+// or the virtual #, Tags and Comment columns). A single source is written raw; a
+// column that merges two or more sources writes each as "<title>: <value>;"
+// joined by a space, so the origin of every value stays visible. An optional
+// timeline-comment prelude is written the same way as the other exporters.
+func ExportAligned(v *View, s *Session, destPath, comment string, cols []AlignedColumn) error {
+	f, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	w.Comma = rune(v.idx.Delimiter())
+	defer w.Flush()
+
+	if strings.TrimSpace(comment) != "" {
+		if err := w.Write([]string{"Timeline comments:", comment}); err != nil {
+			return err
+		}
+	}
+
+	header := make([]string, len(cols))
+	for i, c := range cols {
+		header[i] = c.Name
+	}
+	if err := w.Write(header); err != nil {
+		return err
+	}
+
+	for pos := 0; pos < v.Len(); pos++ {
+		master := v.Master(pos)
+		rec, err := v.idx.Row(master)
+		if err != nil {
+			return err
+		}
+		out := make([]string, len(cols))
+		for i, c := range cols {
+			switch len(c.Sources) {
+			case 0:
+				out[i] = ""
+			case 1:
+				out[i] = cellByRef(v, s, master, c.Sources[0].Ref, rec)
+			default:
+				var b strings.Builder
+				for j, src := range c.Sources {
+					if j > 0 {
+						b.WriteByte(' ')
+					}
+					b.WriteString(src.Title)
+					b.WriteString(": ")
+					b.WriteString(cellByRef(v, s, master, src.Ref, rec))
+					b.WriteByte(';')
+				}
+				out[i] = b.String()
+			}
+		}
+		if err := w.Write(out); err != nil {
+			return err
+		}
+	}
+	w.Flush()
+	return w.Error()
+}
+
+// cellByRef resolves one cell's display value for a master row, mirroring the
+// grid: the virtual #, Tags and Comment columns, then cell overrides, then the
+// raw record. rec is the already-fetched source row for master.
+func cellByRef(v *View, s *Session, master int, ref ColumnRef, rec []string) string {
+	switch ref {
+	case ColRowNum:
+		return strconv.Itoa(master + 1)
+	case ColTags:
+		return strings.Join(s.Tags(master), ", ")
+	case ColComment:
+		return s.Comment(master)
+	default:
+		c := int(ref)
+		if val, ok := s.CellOverride(master, c); ok {
+			return val
+		}
+		if c >= 0 && c < len(rec) {
+			return rec[c]
+		}
+		return ""
+	}
 }

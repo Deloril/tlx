@@ -565,7 +565,8 @@ func (a *App) windowTitle() string {
 func (a *App) buildToolbar() fyne.CanvasObject {
 	openBtn := widget.NewButtonWithIcon("Open", theme.FolderOpenIcon(), a.openFile)
 	saveBtn := widget.NewButtonWithIcon("Save", theme.DocumentSaveIcon(), a.save)
-	exportBtn := widget.NewButtonWithIcon("Export view", theme.DownloadIcon(), a.export)
+	exportBtn := widget.NewButtonWithIcon("Export", theme.DownloadIcon(), nil)
+	exportBtn.OnTapped = func() { a.showExportMenu(exportBtn) }
 
 	a.modeSelect = widget.NewSelect(
 		[]string{model.ReadOnly.String(), model.Investigator.String(), model.WorldWrite.String()},

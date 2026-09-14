@@ -526,6 +526,35 @@ func TestExportWithComment(t *testing.T) {
 	}
 }
 
+// TestExportAligned covers the custom-align export: output columns pull from one
+// or more view columns; a single source writes raw, a merge writes "title: val;"
+// per source. Virtual Tags/Comment columns resolve like the grid.
+func TestExportAligned(t *testing.T) {
+	idx := openT(t, "host,user,event\nalpha,root,login\nbravo,guest,logout\n")
+	s := NewSession(idx.Path())
+	s.SetMode(Investigator)
+	s.AddTag(0, "bad")
+	s.SetComment(0, "look")
+	v := NewView(idx, s)
+
+	cols := []AlignedColumn{
+		{Name: "Who", Sources: []AlignedSource{{Ref: 0, Title: "host"}, {Ref: 1, Title: "user"}}},
+		{Name: "What", Sources: []AlignedSource{{Ref: 2, Title: "event"}}},
+		{Name: "Notes", Sources: []AlignedSource{{Ref: ColTags, Title: "Tags"}, {Ref: ColComment, Title: "Comment"}}},
+	}
+	dest := filepath.Join(t.TempDir(), "aligned.csv")
+	if err := ExportAligned(v, s, dest, "", cols); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dest)
+	want := "Who,What,Notes\n" +
+		"host: alpha; user: root;,login,Tags: bad; Comment: look;\n" +
+		"host: bravo; user: guest;,logout,Tags: ; Comment: ;\n"
+	if string(got) != want {
+		t.Fatalf("aligned export =\n%q\nwant\n%q", got, want)
+	}
+}
+
 // When a source CSV already has Tags/Comment columns that were adopted as the
 // session's annotations, ExportOmitting drops them so the appended Tags/Comment
 // columns do not duplicate the source ones.
