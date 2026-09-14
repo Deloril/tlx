@@ -8,3 +8,4 @@ Icon=tlx
 Categories=Utility;
 Terminal=false
 Keywords=forensics;timeline;csv;dfir;
+StartupWMClass=nz.timeline.explorer

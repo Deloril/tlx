@@ -5,7 +5,9 @@ package gui
 /*
 #cgo LDFLAGS: -lX11
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <string.h>
+#include <stdlib.h>
 
 // setOnTop toggles _NET_WM_STATE_ABOVE on an X11 window via an EWMH client
 // message to the root window — the correct way to change state on an already
@@ -35,10 +37,37 @@ static void setOnTop(unsigned long win, int on) {
 	XFlush(d);
 	XCloseDisplay(d);
 }
+
+// setWMClass rewrites the window's ICCCM WM_CLASS (res_name and res_class) to
+// the given id. GLFW only sets WM_CLASS at window-creation time, from
+// $RESOURCE_NAME and the title, so it never carries our application id; without
+// it a desktop environment can't match the window to the installed .desktop
+// file and falls back to a generic icon. Both fields are set to the same id so
+// StartupWMClass matching works whether the DE keys off the instance or the
+// class.
+static void setWMClass(unsigned long win, const char *id) {
+	Display *d = XOpenDisplay(NULL);
+	if (d == NULL) {
+		return;
+	}
+	XClassHint *hint = XAllocClassHint();
+	if (hint != NULL) {
+		hint->res_name = (char *)id;
+		hint->res_class = (char *)id;
+		XSetClassHint(d, (Window)win, hint);
+		XFree(hint);
+	}
+	XFlush(d);
+	XCloseDisplay(d);
+}
 */
 import "C"
 
-import "fyne.io/fyne/v2/driver"
+import (
+	"unsafe"
+
+	"fyne.io/fyne/v2/driver"
+)
 
 func nativeSetOnTop(ctx any, on bool) {
 	c, ok := ctx.(driver.X11WindowContext)
@@ -50,4 +79,14 @@ func nativeSetOnTop(ctx any, on bool) {
 		v = 1
 	}
 	C.setOnTop(C.ulong(c.WindowHandle), v)
+}
+
+func nativeSetWMClass(ctx any, class string) {
+	c, ok := ctx.(driver.X11WindowContext)
+	if !ok {
+		return // Wayland derives app_id from the app's UniqueID; nothing to do
+	}
+	cs := C.CString(class)
+	defer C.free(unsafe.Pointer(cs))
+	C.setWMClass(C.ulong(c.WindowHandle), cs)
 }

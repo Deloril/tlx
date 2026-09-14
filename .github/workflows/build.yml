@@ -64,8 +64,10 @@ jobs:
                    "$APPDIR/usr/share/icons/hicolor/1024x1024/apps"
           go build -ldflags "-s -w" -o "$APPDIR/usr/bin/tlx" ./cmd/tlx
           cp packaging/linux/AppRun    "$APPDIR/AppRun"
-          cp packaging/linux/tlx.desktop "$APPDIR/tlx.desktop"
-          cp packaging/linux/tlx.desktop "$APPDIR/usr/share/applications/tlx.desktop"
+          # Desktop file id must equal the app's Fyne UniqueID so the Wayland
+          # app_id and the X11 WM_CLASS (set at runtime) both resolve to it.
+          cp packaging/linux/nz.timeline.explorer.desktop "$APPDIR/nz.timeline.explorer.desktop"
+          cp packaging/linux/nz.timeline.explorer.desktop "$APPDIR/usr/share/applications/nz.timeline.explorer.desktop"
           cp internal/gui/icon.png     "$APPDIR/tlx.png"
           cp internal/gui/icon.png     "$APPDIR/usr/share/icons/hicolor/1024x1024/apps/tlx.png"
           chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/tlx"

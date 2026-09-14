@@ -274,6 +274,12 @@ func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		entry.Hide()
 		disp := oneLine(val)
 		if spans := a.hl.Spans(ref, disp); len(spans) > 0 {
+			// Fyne's RichText doesn't truncate multiple inline segments, so a
+			// highlighted match in a long value paints past the column into the
+			// next one. Pre-clip the text to the column width (as the plain label
+			// does automatically) and clamp the spans to what's left.
+			w := a.cols[a.visible[id.Col]].width
+			disp, spans = fitHighlight(disp, spans, w)
 			rich.Segments = highlightSegments(disp, spans)
 			rich.Refresh()
 			lbl.Hide()
@@ -731,6 +737,34 @@ func highlightSegments(s string, spans [][2]int) []widget.RichTextSegment {
 	}
 	plain(s[pos:])
 	return segs
+}
+
+// fitHighlight clips s to the text width of a cell width px wide and drops or
+// trims the highlight spans that fall past the cut, so highlightSegments never
+// produces more inline text than the column can show. Fyne's RichText truncation
+// is a no-op once a line has several inline segments (it lays them all out and
+// paints past its bounds), so we truncate the string ourselves — the same result
+// the plain widget.Label gives on an unmatched cell.
+func fitHighlight(s string, spans [][2]int, width float32) (string, [][2]int) {
+	// Text inset each side, plus a little slack: matched runs render bold and so
+	// a touch wider than ellipsizeToWidth (which measures a regular style) counts.
+	avail := width - 2*theme.InnerPadding() - 6
+	td := ellipsizeToWidth(s, avail)
+	if td == s {
+		return s, spans
+	}
+	bodyLen := len(strings.TrimSuffix(td, "…")) // visible chars before the ellipsis
+	var kept [][2]int                           // fresh slice; spans may be cached upstream
+	for _, sp := range spans {
+		if sp[0] >= bodyLen {
+			continue // match starts past the cut
+		}
+		if sp[1] > bodyLen {
+			sp[1] = bodyLen // match straddles the cut; keep the visible part
+		}
+		kept = append(kept, sp)
+	}
+	return td, kept
 }
 
 // oneLine collapses embedded newlines so a multi-line Summary shows as a single

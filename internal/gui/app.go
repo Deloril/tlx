@@ -4,6 +4,7 @@ package gui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -233,8 +234,13 @@ const autosaveDelay = 600 * time.Millisecond
 // New builds an explorer with no file loaded yet. Call OpenInitial to load one,
 // or let the user open one from the toolbar; either way Run shows the window.
 func New() *App {
+	// GLFW reads $RESOURCE_NAME for the X11 WM_CLASS instance at window
+	// creation; set it to the app id so it matches the .desktop even before
+	// applyWMClass runs. Harmless on Wayland and other platforms.
+	os.Setenv("RESOURCE_NAME", wmClass)
+
 	a := &App{
-		fyne:                app.NewWithID("nz.timeline.explorer"),
+		fyne:                app.NewWithID(wmClass),
 		selRow:              -1,
 		selCol:              -1,
 		selected:            map[int]bool{},
@@ -586,8 +592,7 @@ func (a *App) windowTitle() string {
 func (a *App) buildToolbar() fyne.CanvasObject {
 	openBtn := widget.NewButtonWithIcon("Open", theme.FolderOpenIcon(), a.openFile)
 	saveBtn := widget.NewButtonWithIcon("Save", theme.DocumentSaveIcon(), a.save)
-	exportBtn := widget.NewButtonWithIcon("Export", theme.DownloadIcon(), nil)
-	exportBtn.OnTapped = func() { a.showExportMenu(exportBtn) }
+	exportBtn := widget.NewButtonWithIcon("Export", theme.DownloadIcon(), a.export)
 
 	a.modeSelect = widget.NewSelect(
 		[]string{model.ReadOnly.String(), model.Investigator.String(), model.WorldWrite.String()},
@@ -755,7 +760,11 @@ func (a *App) rebuildTable() {
 	a.refreshTable()
 }
 
-// Run shows the window and blocks until it closes.
+// Run shows the window and blocks until it closes. Show() creates the native
+// window synchronously on the main goroutine, so the handle is live for
+// applyWMClass; then the app event loop runs.
 func (a *App) Run() {
-	a.win.ShowAndRun()
+	a.win.Show()
+	applyWMClass(a.win)
+	a.fyne.Run()
 }
