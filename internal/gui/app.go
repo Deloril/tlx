@@ -91,10 +91,10 @@ type App struct {
 	detailMaster       int
 	detailAcc          *widget.Accordion
 	detailHeadLabel    *widget.Label
-	detailHeadBtn      *widget.Button   // master view "Open in <timeline>"; nil otherwise
-	detailTagsBox      *fyne.Container  // Tags section body, repopulated per row
-	detailCommentEntry *growEntry       // writable comment box; nil in read-only
-	detailCommentLabel *widget.Label    // read-only comment; nil when writable
+	detailHeadBtn      *widget.Button  // master view "Open in <timeline>"; nil otherwise
+	detailTagsBox      *fyne.Container // Tags section body, repopulated per row
+	detailCommentEntry *growEntry      // writable comment box; nil in read-only
+	detailCommentLabel *widget.Label   // read-only comment; nil when writable
 	detailFields       []detailField
 
 	// Investigator's notes (per-timeline Artifacts/Times) and the timeline
@@ -165,6 +165,13 @@ type App struct {
 	dragHdrActive bool
 	dragHdrPos    int
 	dragHdrAccum  float32
+	// hoverHeaderPos is the display column the pointer was last over in the header
+	// row, set by the header buttons' hover handlers. The drag overlay reads it to
+	// learn which column a reorder drag started on — the header button itself never
+	// receives the drag (see headerDragOverlay).
+	hoverHeaderPos int
+	headerOverlay  *headerDragOverlay
+	headerBandH    float32 // height of the header strip the overlay covers
 
 	sidebarVisible      bool // right dock (filter + detail panels)
 	viewsSidebarVisible bool // left sidebar (views + case + IOC sections)
@@ -234,6 +241,7 @@ func New() *App {
 		anchorView:          -1,
 		hoverRow:            -1,
 		hoverCol:            -1,
+		hoverHeaderPos:      -1,
 		lastClickRow:        -1,
 		lastClickCol:        -1,
 		sidebarVisible:      false, // detail pane starts collapsed; Ctrl+B reveals it
@@ -389,7 +397,7 @@ func (a *App) buildUI() {
 	a.buildRightDock()
 	a.buildLeftSidebar()
 
-	a.split = container.NewHSplit(a.table, a.rightScroll)
+	a.split = container.NewHSplit(a.wrapTable(), a.rightScroll)
 	a.split.Offset = a.rightDockOffset
 
 	a.outerSplit = container.NewHSplit(a.leftScroll, a.split)
@@ -742,7 +750,7 @@ func (a *App) rebuildTable() {
 		return
 	}
 	a.table = a.newTable()
-	a.split.Leading = a.table
+	a.split.Leading = a.wrapTable()
 	a.split.Refresh()
 	a.refreshTable()
 }

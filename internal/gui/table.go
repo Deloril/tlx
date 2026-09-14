@@ -180,6 +180,58 @@ func (a *App) newTable() *bigTable {
 	return t
 }
 
+// wrapTable puts the drag overlay on top of the current table, sized to the
+// header strip so drags below the header still reach the grid. It is used as the
+// split's leading content in place of the bare table.
+func (a *App) wrapTable() fyne.CanvasObject {
+	if a.headerOverlay == nil {
+		a.headerOverlay = newHeaderDragOverlay(a)
+	}
+	a.measureHeaderBand()
+	return container.New(headerBandLayout{app: a}, a.table, a.headerOverlay)
+}
+
+// measureHeaderBand records the header row's height so the overlay can cover just
+// that strip. The header cell template drives the row height (see the note in
+// newTable), so its MinSize is the height. Undershoot by a couple of pixels so
+// the overlay never spills onto the first data row, where a stray drag would
+// otherwise be read as a header reorder.
+func (a *App) measureHeaderBand() {
+	if a.table == nil || a.table.CreateHeader == nil {
+		return
+	}
+	h := a.table.CreateHeader().MinSize().Height
+	if h > 4 {
+		h -= 2
+	}
+	a.headerBandH = h
+}
+
+// headerBandLayout lays the table out at full size and the overlay across the top
+// header strip only.
+type headerBandLayout struct{ app *App }
+
+func (l headerBandLayout) MinSize(objs []fyne.CanvasObject) fyne.Size {
+	if len(objs) == 0 {
+		return fyne.Size{}
+	}
+	return objs[0].MinSize()
+}
+
+func (l headerBandLayout) Layout(objs []fyne.CanvasObject, s fyne.Size) {
+	if len(objs) < 2 {
+		return
+	}
+	objs[0].Move(fyne.NewPos(0, 0))
+	objs[0].Resize(s)
+	h := l.app.headerBandH
+	if h <= 0 || h > s.Height {
+		h = s.Height
+	}
+	objs[1].Move(fyne.NewPos(0, 0))
+	objs[1].Resize(fyne.NewSize(s.Width, h))
+}
+
 func (a *App) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 	stack, ok := o.(*fyne.Container)
 	if !ok || len(stack.Objects) < 4 {
@@ -350,16 +402,16 @@ func (a *App) updateHeader(id widget.TableCellID, o fyne.CanvasObject) {
 }
 
 // headerButton is the column-title button in the header row. Tapping it sorts
-// the column (OnTapped, set in updateHeader); dragging it sideways reorders the
-// column past its neighbours. A tap and a drag are distinct gestures in Fyne, so
-// the two don't collide: a press that doesn't move fires Tapped, one that moves
-// fires Dragged.
+// the column (OnTapped, set in updateHeader). Dragging it sideways reorders the
+// column, but the drag is handled by headerDragOverlay, not here — Fyne's Table
+// renders the header inside a Scroll clip that swallows the mouse-down and drag
+// streams before they reach this button (taps and hover still get through). So
+// the button only records, on hover, which display column the pointer is over;
+// the overlay reads that to know where a reorder drag began.
 //
-// The drag state lives on the App, not here, because widget.Table reuses header
-// cells and rebinds them to columns as the grid refreshes — so this instance's
-// pos is overwritten mid-drag. Fyne keeps routing Dragged to the instance the
-// gesture started on regardless, so we capture the starting column once and then
-// track it in App state.
+// Reorder state lives on the App, not here, because widget.Table reuses header
+// cells and rebinds them to columns as the grid refreshes — this instance's pos
+// is overwritten mid-drag.
 type headerButton struct {
 	widget.Button
 	app *App
@@ -374,14 +426,59 @@ func newHeaderButton(a *App) *headerButton {
 	return h
 }
 
-func (h *headerButton) Dragged(e *fyne.DragEvent) {
-	a := h.app
+// MouseIn / MouseMoved keep the App's hoverHeaderPos pointed at this cell's
+// column while the pointer is over it, so a drag starting here reorders the right
+// column. MouseOut clears it, so a drag begun over blank header space (right of
+// the last column) doesn't reorder a stale one. That's safe against the "cleared
+// mid-drag" race because a reorder drag begins while the pointer is still inside
+// the cell it pressed on — the overlay reads hoverHeaderPos on the first drag
+// event, before the pointer has left to trigger MouseOut.
+func (h *headerButton) MouseIn(e *desktop.MouseEvent) {
+	h.Button.MouseIn(e)
+	h.app.hoverHeaderPos = h.pos
+}
+
+func (h *headerButton) MouseMoved(e *desktop.MouseEvent) {
+	h.Button.MouseMoved(e)
+	h.app.hoverHeaderPos = h.pos
+}
+
+func (h *headerButton) MouseOut() {
+	h.Button.MouseOut()
+	if h.app.hoverHeaderPos == h.pos {
+		h.app.hoverHeaderPos = -1
+	}
+}
+
+// headerDragOverlay is a transparent widget laid over the header strip. It exists
+// only to receive the drag stream the header buttons can't (the Table's header
+// Scroll clip intercepts drags), and turns a sideways drag into a column reorder.
+// It implements neither Tappable nor Hoverable, so sort clicks and hover tooltips
+// pass straight through to the header buttons beneath it.
+type headerDragOverlay struct {
+	widget.BaseWidget
+	app *App
+}
+
+func newHeaderDragOverlay(a *App) *headerDragOverlay {
+	o := &headerDragOverlay{app: a}
+	o.ExtendBaseWidget(o)
+	return o
+}
+
+func (o *headerDragOverlay) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(canvas.NewRectangle(color.Transparent))
+}
+
+func (o *headerDragOverlay) Dragged(e *fyne.DragEvent) {
+	a := o.app
 	if !a.dragHdrActive {
-		if h.pos < 0 || h.pos >= len(a.visible) {
-			return
+		p := a.hoverHeaderPos
+		if p < 0 || p >= len(a.visible) {
+			return // drag didn't start over a column header
 		}
 		a.dragHdrActive = true
-		a.dragHdrPos = h.pos
+		a.dragHdrPos = p
 		a.dragHdrAccum = 0
 		a.cancelInlineEdit() // edit coords are display positions; reorder invalidates them
 	}
@@ -391,9 +488,9 @@ func (h *headerButton) Dragged(e *fyne.DragEvent) {
 	}
 }
 
-func (h *headerButton) DragEnd() {
-	h.app.dragHdrActive = false
-	h.app.dragHdrAccum = 0
+func (o *headerDragOverlay) DragEnd() {
+	o.app.dragHdrActive = false
+	o.app.dragHdrAccum = 0
 }
 
 // TappedSecondary opens the per-column menu for the column this header shows:
