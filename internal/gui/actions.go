@@ -672,7 +672,9 @@ Keyboard
   Ctrl+B   toggle right dock   Ctrl+L  toggle left sidebar
   t        tag selected row    c       comment row
   Ctrl+Shift+F  toggle per-column filter row
-  Click a header to sort; click again to reverse. The Filter row button
+  Click a header to sort; click again to reverse. Drag a header sideways
+  to reorder columns. Right-click a header to clear that column's filters,
+  keep only empty / non-empty rows, or reveal its filter box. The Filter row button
   (or Ctrl+Shift+F) shows a box under each header to filter that column;
   press Enter to apply. It is off by default because it makes rows taller.
   The Clear filters button (toolbar) drops every filter at once, same as Esc.

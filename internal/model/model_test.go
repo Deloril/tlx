@@ -397,6 +397,34 @@ func TestColumnCondNeg(t *testing.T) {
 	}
 }
 
+// TestColumnEmptiness covers the mechanism the header right-click "empty" /
+// "not empty" menu items rely on: a regexp `\S` condition matches non-empty
+// cells, and negating it keeps the empty (and whitespace-only) ones.
+func TestColumnEmptiness(t *testing.T) {
+	idx := openT(t, "host,note\nalpha,hit\nbravo,\ncharlie,   \ndelta,ok\n")
+	v := NewView(idx, NewSession(idx.Path()))
+
+	// Not empty: note has a non-space char -> alpha and delta only.
+	if err := v.Apply(FilterSpec{Conds: []ColumnCond{
+		{Column: 1, Values: []string{`\S`}, Regexp: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 2 || v.Master(0) != 0 || v.Master(1) != 3 {
+		t.Fatalf("note not empty -> len=%d masters=%d,%d, want 2 (0,3)", v.Len(), v.Master(0), v.Master(1))
+	}
+
+	// Empty: negation keeps the blank and whitespace-only rows -> bravo, charlie.
+	if err := v.Apply(FilterSpec{Conds: []ColumnCond{
+		{Column: 1, Values: []string{`\S`}, Regexp: true, Neg: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if v.Len() != 2 || v.Master(0) != 1 || v.Master(1) != 2 {
+		t.Fatalf("note empty -> len=%d masters=%d,%d, want 2 (1,2)", v.Len(), v.Master(0), v.Master(1))
+	}
+}
+
 func TestColumnCondAllValues(t *testing.T) {
 	idx := openT(t, "msg\nfailed login attempt\nfailed logout\nsuccess login\n")
 	v := NewView(idx, NewSession(idx.Path()))

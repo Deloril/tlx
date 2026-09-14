@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"fmt"
 	"image/color"
 	"strconv"
 	"strings"
@@ -384,6 +385,92 @@ func (h *headerButton) Dragged(e *fyne.DragEvent) {
 func (h *headerButton) DragEnd() {
 	h.app.dragHdrActive = false
 	h.app.dragHdrAccum = 0
+}
+
+// TappedSecondary opens the per-column menu for the column this header shows:
+// clear the column's filters, keep only empty / non-empty rows, or reveal the
+// per-column text box for a custom filter.
+func (h *headerButton) TappedSecondary(e *fyne.PointEvent) {
+	a := h.app
+	if h.pos < 0 || h.pos >= len(a.visible) {
+		return
+	}
+	col := a.cols[a.visible[h.pos]]
+	a.showColumnMenu(col.ref, col.title, e.AbsolutePosition)
+}
+
+// colEmptinessPattern is the regexp the empty / not-empty column filters use: a
+// cell matches when it has any non-whitespace character. "Empty" negates it, so
+// blank and whitespace-only cells are kept (matching the "*" box token, which
+// also trims). Both filters share this signature so applying one replaces the
+// other (see dropEmptinessCond).
+const colEmptinessPattern = `\S`
+
+// showColumnMenu is the header right-click menu.
+func (a *App) showColumnMenu(ref model.ColumnRef, title string, at fyne.Position) {
+	items := []*fyne.MenuItem{
+		fyne.NewMenuItem("Clear filters on this column", func() { a.clearColumnFilters(ref) }),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem(fmt.Sprintf("Show only rows where %s is empty", title),
+			func() { a.filterColumnEmptiness(ref, true) }),
+		fyne.NewMenuItem(fmt.Sprintf("Show only rows where %s is not empty", title),
+			func() { a.filterColumnEmptiness(ref, false) }),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Custom filter…", func() { a.revealColumnFilterBox() }),
+	}
+	widget.NewPopUpMenu(fyne.NewMenu("", items...), a.win.Canvas()).ShowAtPosition(at)
+}
+
+// filterColumnEmptiness keeps only rows where ref is empty (empty=true) or
+// non-empty (empty=false). It replaces any previous emptiness filter on the same
+// column, so the two are mutually exclusive.
+func (a *App) filterColumnEmptiness(ref model.ColumnRef, empty bool) {
+	a.conds = dropEmptinessCond(a.conds, ref)
+	a.conds = append(a.conds, model.ColumnCond{
+		Column: ref,
+		Values: []string{colEmptinessPattern},
+		Regexp: true,
+		Neg:    empty, // negating "has a non-space char" keeps blank cells
+	})
+	a.applySearch()
+	a.rebuildFilterPanel()
+}
+
+// clearColumnFilters drops every filter targeting ref: its header text box and
+// any structured conditions on it (including the empty / not-empty ones). Other
+// columns and the free-text query are left alone.
+func (a *App) clearColumnFilters(ref model.ColumnRef) {
+	delete(a.colFilter, ref)
+	kept := a.conds[:0]
+	for _, c := range a.conds {
+		if c.Column != ref {
+			kept = append(kept, c)
+		}
+	}
+	a.conds = kept
+	a.applySearch()
+	a.rebuildFilterPanel()
+}
+
+// revealColumnFilterBox shows the per-column filter row (the boxes under the
+// headers) if it is hidden, so a custom substring filter can be typed there.
+func (a *App) revealColumnFilterBox() {
+	if !a.showFilters {
+		a.toggleFilterRow()
+	}
+}
+
+// dropEmptinessCond removes the header menu's empty / not-empty condition for ref
+// (identified by its regexp signature), leaving any other conditions in place.
+func dropEmptinessCond(conds []model.ColumnCond, ref model.ColumnRef) []model.ColumnCond {
+	kept := conds[:0]
+	for _, c := range conds {
+		if c.Column == ref && c.Regexp && len(c.Values) == 1 && c.Values[0] == colEmptinessPattern {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
 }
 
 // dragShiftColumn swaps the dragged column past a neighbour each time the banked
