@@ -68,6 +68,24 @@ func (e *submitEntry) TypedKey(key *fyne.KeyEvent) {
 	e.Entry.TypedKey(key)
 }
 
+// TypedShortcut catches Ctrl/Cmd+Enter. Fyne's driver turns a modifier+key press
+// into a CustomShortcut routed here and then stops, so TypedKey (and the modDown
+// tracking above) never sees the combo — this is the path that actually fires for
+// Ctrl+Enter. On a multi-line box, insert a newline; everything else (copy, paste,
+// word motion) goes to the embedded Entry.
+func (e *submitEntry) TypedShortcut(s fyne.Shortcut) {
+	if cs, ok := s.(*desktop.CustomShortcut); ok && e.MultiLine {
+		if (cs.KeyName == fyne.KeyReturn || cs.KeyName == fyne.KeyEnter) &&
+			cs.Modifier&(fyne.KeyModifierControl|fyne.KeyModifierSuper) != 0 {
+			// Reuse Fyne's own insertion: Shift isn't held, so a multi-line entry
+			// adds a newline here rather than submitting.
+			e.Entry.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+			return
+		}
+	}
+	e.Entry.TypedShortcut(s)
+}
+
 // growEntry is a multi-line entry that grows to fit its text and can be resized
 // by dragging the grip along its bottom edge. Auto-fit tracks the wrapped line
 // count (floored at minRows, capped at maxRows so one huge cell can't fill the

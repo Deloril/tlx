@@ -36,10 +36,9 @@ func TestSubmitEntryEnterVsCtrlEnter(t *testing.T) {
 		t.Fatalf("plain Enter must not insert a newline, text=%q", e.Text)
 	}
 
-	// Ctrl+Enter: newline, no submit.
-	e.KeyDown(&fyne.KeyEvent{Name: desktop.KeyControlLeft})
-	e.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
-	e.KeyUp(&fyne.KeyEvent{Name: desktop.KeyControlLeft})
+	// Ctrl+Enter: newline, no submit. Fyne's driver delivers this combo as a
+	// CustomShortcut, not through TypedKey, so drive that path.
+	e.TypedShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyReturn, Modifier: fyne.KeyModifierControl})
 	if fired != 1 {
 		t.Fatalf("Ctrl+Enter must not submit, fired=%d", fired)
 	}
@@ -47,10 +46,10 @@ func TestSubmitEntryEnterVsCtrlEnter(t *testing.T) {
 		t.Fatalf("Ctrl+Enter must insert a newline, text=%q", e.Text)
 	}
 
-	// After releasing Ctrl, Enter submits again.
+	// A plain Enter still submits.
 	e.TypedKey(&fyne.KeyEvent{Name: fyne.KeyEnter})
 	if fired != 2 {
-		t.Fatalf("Enter after Ctrl release must submit, fired=%d", fired)
+		t.Fatalf("plain Enter must submit, fired=%d", fired)
 	}
 }
 
