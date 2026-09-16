@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -61,6 +62,12 @@ var defaultTagDefs = []TagDef{
 
 // defaultTagColor is used for tags applied or loaded without an explicit colour.
 const defaultTagColor = "#78909C"
+
+// NoHighlightColor marks a tag that paints no row background. It is stored in
+// the palette verbatim (unlike "", which defineLocked coerces to
+// defaultTagColor); the GUI offers it as a "No highlight" swatch and RowColor
+// treats a row whose top tag carries it as unhighlighted.
+const NoHighlightColor = "none"
 
 // Session holds everything the user layers on top of the immutable CSV: the
 // active mode, per-row tags and comments, and per-cell edits. It implements
@@ -276,6 +283,53 @@ func (s *Session) DeleteTag(name string) error {
 	return nil
 }
 
+// RenameTag changes a tag's name across the palette and every row that carries
+// it, keeping the tag's colour and priority. It needs a writable mode because it
+// mutates row tag lists. Renaming onto an existing different tag is rejected
+// rather than merged, and an unknown source tag is an error.
+func (s *Session) RenameTag(oldName, newName string) error {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return errors.New("tag name cannot be empty")
+	}
+	if oldName == newName {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mode == ReadOnly {
+		return ErrReadOnly
+	}
+	i, ok := s.tagIndex[oldName]
+	if !ok {
+		return fmt.Errorf("unknown tag %q", oldName)
+	}
+	if _, exists := s.tagIndex[newName]; exists {
+		return fmt.Errorf("a tag named %q already exists", newName)
+	}
+	// Palette: rename in place so priority order is untouched, then fix the lookup.
+	s.tagDefs[i].Name = newName
+	delete(s.tagIndex, oldName)
+	s.tagIndex[newName] = i
+	// Rows: swap the name wherever it appears, keeping each list sorted.
+	for row, tags := range s.tags {
+		changed := false
+		for j, t := range tags {
+			if t == oldName {
+				tags[j] = newName
+				changed = true
+			}
+		}
+		if changed {
+			sort.Strings(tags)
+			s.tags[row] = tags
+		}
+	}
+	s.dirty = true
+	return nil
+}
+
 // SetComment sets a row's comment. Allowed in Investigator and World-write.
 func (s *Session) SetComment(row int, text string) error {
 	s.mu.Lock()
@@ -408,7 +462,10 @@ func (s *Session) RowColor(row int) (string, bool) {
 	if best < 0 {
 		return "", false
 	}
-	return s.tagDefs[best].Color, true
+	if c := s.tagDefs[best].Color; c != NoHighlightColor {
+		return c, true
+	}
+	return "", false
 }
 
 // SessionSnapshot is a plain-data copy of every annotation in a session: tags,

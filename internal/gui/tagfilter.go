@@ -110,6 +110,12 @@ func (a *App) showTagFilterPopup(anchor *widget.Button, canvas fyne.Canvas, labe
 				pop.Hide()
 			}
 		}),
+		widget.NewButton("Manage tags…", func() {
+			if pop != nil {
+				pop.Hide()
+			}
+			a.manageTagsDialog()
+		}),
 		widget.NewButton("Close", func() {
 			if pop != nil {
 				pop.Hide()

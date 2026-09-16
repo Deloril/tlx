@@ -3,6 +3,7 @@ package gui
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -118,31 +119,39 @@ func (a *App) bulkTag() {
 	a.addTagDialog(masters)
 }
 
-// addTagDialog shows the tag picker and applies the chosen tag to every master
-// row given. With one row it shows that row's current tags; with several it says
-// how many rows the tag will be added to.
+// tagCount is a tag and the number of selected rows carrying it.
+type tagCount struct {
+	name string
+	n    int
+}
+
+// selectionTags returns the tags present across the given rows, sorted by name,
+// each with the count of those rows that carry it.
+func (a *App) selectionTags(masters []int) []tagCount {
+	counts := map[string]int{}
+	for _, m := range masters {
+		for _, t := range a.sess.Tags(m) {
+			counts[t]++
+		}
+	}
+	out := make([]tagCount, 0, len(counts))
+	for t, n := range counts {
+		out = append(out, tagCount{name: t, n: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
+}
+
+// addTagDialog shows the tag picker for every master row given: the tags already
+// on the selection (removable, one ✕ each), plus a name/colour picker to add
+// one. With several rows a removal strips the tag from all of them.
 func (a *App) addTagDialog(masters []int) {
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("tag name, e.g. lateral-movement")
 
-	// Colour picker: preset swatches, single selection. Default to the first
-	// preset; picking an existing tag below adopts its colour.
-	chosen := palettePresets[0]
-	var swatches []*swatch
-	selectColor := func(hex string) {
-		chosen = hex
-		for _, sw := range swatches {
-			sw.setSelected(colorEq(sw.fill, parseHex(hex)))
-		}
-	}
-	swBox := container.NewGridWrap(fyne.NewSize(34, 26))
-	for _, hex := range palettePresets {
-		hex := hex
-		sw := newSwatch(parseHex(hex), func() { selectColor(hex) })
-		swatches = append(swatches, sw)
-		swBox.Add(sw)
-	}
-	selectColor(chosen)
+	// Colour picker: preset swatches plus a "No highlight" option. Picking an
+	// existing tag below adopts its colour.
+	swBox, chosenColor, selectColor := buildColorPicker(palettePresets[0])
 
 	// Reuse existing tags: tapping fills the name and adopts its colour.
 	defs := a.sess.TagDefs()
@@ -161,13 +170,56 @@ func (a *App) addTagDialog(masters []int) {
 
 	var header string
 	if len(masters) == 1 {
-		header = "Current: " + strings.Join(a.sess.Tags(masters[0]), ", ")
+		header = fmt.Sprintf("Row %d", masters[0]+1)
 	} else {
-		header = fmt.Sprintf("Adding to %s", plural(len(masters), "row"))
+		header = fmt.Sprintf("%s selected", plural(len(masters), "row"))
 	}
+
+	// Tags already on the selection, each removable from every selected row. With
+	// several rows a count shows when a tag is only on some of them. Removing acts
+	// immediately (like the detail pane) and rebuilds this section in place.
+	present := container.NewVBox()
+	var rebuildPresent func()
+	rebuildPresent = func() {
+		present.Objects = present.Objects[:0]
+		tc := a.selectionTags(masters)
+		if len(tc) == 0 {
+			present.Add(widget.NewLabel("(none yet)"))
+		} else {
+			chips := container.NewGridWrap(fyne.NewSize(170, 34))
+			for _, t := range tc {
+				t := t
+				label := t.name
+				if len(masters) > 1 && t.n < len(masters) {
+					label = fmt.Sprintf("%s (%d)", t.name, t.n)
+				}
+				hex, _ := a.sess.TagColor(t.name)
+				btn := widget.NewButtonWithIcon(label, theme.CancelIcon(), func() {
+					for _, m := range masters {
+						if err := a.sess.RemoveTag(m, t.name); err != nil {
+							a.showError(err)
+							return
+						}
+					}
+					rebuildPresent()
+					if a.selectedMaster() >= 0 {
+						a.showDetail(a.selectedMaster())
+					}
+					a.refreshTable()
+				})
+				chips.Add(container.NewHBox(colorSquare(hex), btn))
+			}
+			present.Add(chips)
+		}
+		present.Refresh()
+	}
+	rebuildPresent()
+
 	body := container.NewVBox(
 		widget.NewLabel(header),
-		widget.NewLabel("Tag name:"), entry,
+		widget.NewLabel("Tags on selection (✕ removes from every selected row):"), present,
+		widget.NewSeparator(),
+		widget.NewLabel("Add tag:"), entry,
 		widget.NewLabel("Colour (new tags only):"), swBox,
 		widget.NewLabel("Reuse:"), reuse,
 	)
@@ -181,7 +233,7 @@ func (a *App) addTagDialog(masters []int) {
 		}
 		// Register colour for a new tag; leave existing tags' colours alone.
 		if _, known := a.sess.TagColor(name); !known {
-			if err := a.sess.DefineTag(name, chosen); err != nil {
+			if err := a.sess.DefineTag(name, chosenColor()); err != nil {
 				a.showError(err)
 				return
 			}
@@ -207,20 +259,26 @@ func (a *App) commentSelected() {
 		a.showError(fmt.Errorf("select a row first"))
 		return
 	}
-	entry := widget.NewMultiLineEntry()
+	entry := newSubmitEntry()
 	entry.SetText(a.sess.Comment(master))
 	entry.SetMinRowsVisible(4)
-	dialog.ShowCustomConfirm("Comment", "Save", "Cancel", entry, func(ok bool) {
-		if !ok {
-			return
-		}
+	save := func() {
 		if err := a.sess.SetComment(master, entry.Text); err != nil {
 			a.showError(err)
 			return
 		}
 		a.showDetail(master)
 		a.refreshTable()
+	}
+	content := container.NewBorder(
+		widget.NewLabel("Enter to save, Ctrl+Enter for newline:"), nil, nil, nil, entry)
+	d := dialog.NewCustomConfirm("Comment", "Save", "Cancel", content, func(ok bool) {
+		if ok {
+			save()
+		}
 	}, a.win)
+	entry.OnSubmitted = func(string) { save(); d.Hide() }
+	d.Show()
 }
 
 // bulkComment sets the same comment on every selected row, replacing whatever
@@ -231,7 +289,7 @@ func (a *App) bulkComment() {
 		a.showError(fmt.Errorf("select one or more rows first"))
 		return
 	}
-	entry := widget.NewMultiLineEntry()
+	entry := newSubmitEntry()
 	entry.SetMinRowsVisible(4)
 	// Seed with the common comment if every selected row already shares one.
 	first := a.sess.Comment(masters[0])
@@ -245,11 +303,7 @@ func (a *App) bulkComment() {
 	if same {
 		entry.SetText(first)
 	}
-	title := fmt.Sprintf("Comment %s (replaces existing)", plural(len(masters), "row"))
-	dialog.ShowCustomConfirm(title, "Save", "Cancel", entry, func(ok bool) {
-		if !ok {
-			return
-		}
+	save := func() {
 		for _, m := range masters {
 			if err := a.sess.SetComment(m, entry.Text); err != nil {
 				a.showError(err)
@@ -260,7 +314,17 @@ func (a *App) bulkComment() {
 			a.showDetail(a.selectedMaster())
 		}
 		a.refreshTable()
+	}
+	title := fmt.Sprintf("Comment %s (replaces existing)", plural(len(masters), "row"))
+	content := container.NewBorder(
+		widget.NewLabel("Enter to save, Ctrl+Enter for newline:"), nil, nil, nil, entry)
+	d := dialog.NewCustomConfirm(title, "Save", "Cancel", content, func(ok bool) {
+		if ok {
+			save()
+		}
 	}, a.win)
+	entry.OnSubmitted = func(string) { save(); d.Hide() }
+	d.Show()
 }
 
 // Detail pane: full row, tags, comment; editable per mode.
@@ -363,7 +427,7 @@ func (a *App) buildDetail() {
 		ce.OnSubmitted = func(s string) { a.sess.SetComment(a.detailMaster, s); a.refreshTable() }
 		a.detailCommentEntry = ce
 		body := container.NewVBox(
-			widget.NewLabel("Shift+Enter for newline, Enter to save:"), ceBox)
+			widget.NewLabel("Enter to save, Ctrl+Enter for newline:"), ceBox)
 		acc.Append(widget.NewAccordionItem("Comment", body))
 	}
 

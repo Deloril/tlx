@@ -23,6 +23,10 @@ var palettePresets = []string{
 	"#8E24AA", "#00897B", "#FB8C00", "#6D4C41", "#78909C",
 }
 
+// noHighlightFill is the neutral square drawn (struck through) for the "No
+// highlight" tag option, which paints no row background.
+const noHighlightFill = "#90A4AE"
+
 // parseHex turns "#RRGGBB" (or "#RGB") into an opaque colour. An unparseable
 // string falls back to a neutral grey rather than erroring.
 func parseHex(s string) color.NRGBA {
@@ -122,10 +126,12 @@ func newTagChip(name, hex string, onTap func()) fyne.CanvasObject {
 type swatch struct {
 	widget.BaseWidget
 	fill     color.Color
+	none     bool // draws a diagonal strike to signal "no highlight"
 	selected bool
 	onTap    func()
 	rect     *canvas.Rectangle
 	border   *canvas.Rectangle
+	strike   *canvas.Line
 }
 
 func newSwatch(fill color.Color, onTap func()) *swatch {
@@ -145,7 +151,13 @@ func (s *swatch) CreateRenderer() fyne.WidgetRenderer {
 	s.border.CornerRadius = 4
 	s.rect = canvas.NewRectangle(s.fill)
 	s.rect.CornerRadius = 3
-	return &swatchRenderer{s: s, objects: []fyne.CanvasObject{s.border, s.rect}}
+	objects := []fyne.CanvasObject{s.border, s.rect}
+	if s.none {
+		s.strike = canvas.NewLine(color.NRGBA{R: 0xE0, G: 0x30, B: 0x30, A: 0xFF})
+		s.strike.StrokeWidth = 2
+		objects = append(objects, s.strike)
+	}
+	return &swatchRenderer{s: s, objects: objects}
 }
 
 func (s *swatch) Tapped(_ *fyne.PointEvent) {
@@ -170,6 +182,10 @@ func (r *swatchRenderer) Layout(size fyne.Size) {
 	}
 	r.s.rect.Resize(fyne.NewSize(size.Width-2*inset, size.Height-2*inset))
 	r.s.rect.Move(fyne.NewPos(inset, inset))
+	if r.s.strike != nil {
+		r.s.strike.Position1 = fyne.NewPos(inset+2, inset+2)
+		r.s.strike.Position2 = fyne.NewPos(size.Width-inset-2, size.Height-inset-2)
+	}
 }
 
 func (r *swatchRenderer) MinSize() fyne.Size { return r.s.MinSize() }
@@ -183,6 +199,9 @@ func (r *swatchRenderer) Refresh() {
 	}
 	canvas.Refresh(r.s.border)
 	canvas.Refresh(r.s.rect)
+	if r.s.strike != nil {
+		canvas.Refresh(r.s.strike)
+	}
 	r.Layout(r.s.Size())
 }
 

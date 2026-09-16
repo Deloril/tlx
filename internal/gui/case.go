@@ -36,9 +36,13 @@ func (a *App) buildMainMenu() *fyne.MainMenu {
 
 	a.caseMenu = fyne.NewMenu("Case", a.caseMenuItems()...)
 
+	tagsMenu := fyne.NewMenu("Tags",
+		fyne.NewMenuItem("Manage tags…", a.manageTagsDialog),
+	)
+
 	// Saved views live in the collapsible left sidebar (see views.go), not the
 	// menu bar.
-	return fyne.NewMainMenu(fileMenu, a.caseMenu)
+	return fyne.NewMainMenu(fileMenu, a.caseMenu, tagsMenu)
 }
 
 // caseMenuItems lists the master timeline, an add action and every

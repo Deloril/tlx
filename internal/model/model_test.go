@@ -323,6 +323,72 @@ func TestDeleteTag(t *testing.T) {
 	}
 }
 
+func TestNoHighlightColor(t *testing.T) {
+	s := NewSession("x.csv")
+	s.SetMode(Investigator)
+	if err := s.DefineTag("note", NoHighlightColor); err != nil {
+		t.Fatal(err)
+	}
+
+	// A row whose only tag is no-highlight paints no background.
+	s.AddTag(0, "note")
+	if c, ok := s.RowColor(0); ok {
+		t.Errorf("no-highlight row colour = %q,%v, want no colour", c, ok)
+	}
+	// TagColor still reports the sentinel so the editor can preselect it.
+	if c, ok := s.TagColor("note"); !ok || c != NoHighlightColor {
+		t.Errorf("note colour = %q,%v, want %q", c, ok, NoHighlightColor)
+	}
+
+	// A higher-priority coloured tag still wins over a no-highlight one.
+	s.AddTag(1, "note")
+	s.AddTag(1, "Bad")
+	if c, ok := s.RowColor(1); !ok || c != "#E53935" {
+		t.Errorf("row with Bad + note = %q,%v, want Bad red", c, ok)
+	}
+}
+
+func TestRenameTag(t *testing.T) {
+	s := NewSession("x.csv")
+	s.SetMode(Investigator)
+	s.DefineTag("beacon", "#123456")
+	s.AddTag(0, "beacon")
+	s.AddTag(0, "Bad")
+	s.AddTag(1, "beacon")
+
+	if err := s.RenameTag("beacon", "c2"); err != nil {
+		t.Fatalf("RenameTag: %v", err)
+	}
+	// Old name gone, new name carries the old colour.
+	if _, ok := s.TagColor("beacon"); ok {
+		t.Error("old name still in palette after rename")
+	}
+	if c, ok := s.TagColor("c2"); !ok || c != "#123456" {
+		t.Errorf("renamed colour = %q,%v, want #123456", c, ok)
+	}
+	// Rows swapped the name, staying sorted, and other tags are untouched.
+	if tags := s.Tags(0); strings.Join(tags, ",") != "Bad,c2" {
+		t.Errorf("row 0 tags = %v, want [Bad c2]", tags)
+	}
+	if tags := s.Tags(1); len(tags) != 1 || tags[0] != "c2" {
+		t.Errorf("row 1 tags = %v, want [c2]", tags)
+	}
+
+	// Renaming onto an existing tag is rejected, not merged.
+	if err := s.RenameTag("c2", "Bad"); err == nil {
+		t.Error("rename onto existing tag should fail")
+	}
+	// Unknown source tag errors.
+	if err := s.RenameTag("nope", "x"); err == nil {
+		t.Error("rename of unknown tag should fail")
+	}
+	// Read-only refuses it.
+	s.SetMode(ReadOnly)
+	if err := s.RenameTag("c2", "c3"); err != ErrReadOnly {
+		t.Errorf("RenameTag in RO = %v, want ErrReadOnly", err)
+	}
+}
+
 func TestColumnCondFilter(t *testing.T) {
 	idx := openT(t, "host,event\nalpha,login\nbravo,logout\nalpha,logout\ncharlie,login\n")
 	v := NewView(idx, NewSession(idx.Path()))

@@ -326,8 +326,8 @@ func (a *App) newIOCList() {
 	}, a.win)
 }
 
-// editIOCList opens a list for editing: its name and its indicators. Saving
-// stores both and runs the list against the open timeline.
+// editIOCList opens a list for editing: its name and its indicators. Save stores
+// both without touching any tags; Save & run also scans the open timeline.
 func (a *App) editIOCList(e iocEntry) {
 	cur, err := a.iocBody(e)
 	if err != nil {
@@ -342,36 +342,56 @@ func (a *App) editIOCList(e iocEntry) {
 	body.Wrapping = fyne.TextWrapOff
 
 	hint := widget.NewLabel(
-		"One indicator per line. A plain string matches any column; wrap it in " +
-			"/…/ for a regex. Start a line with a backtick to write a filter query, " +
-			"e.g. `Summary=psexec AND Timestamp between 2024 and 2025. Blank lines " +
-			"and lines starting with # are ignored. Matching is case-insensitive. " +
-			"Hits are tagged " + iocTagFor(e.Name) + ".")
+		"One indicator per line. A plain string matches any data column; wrap it " +
+			"in /…/ for a regex. Start a line with a backtick to write a filter " +
+			"query, e.g. `Summary=psexec AND Timestamp between 2024 and 2025. The " +
+			"Tags and Comment fields are skipped unless a backtick line names them " +
+			"(`tag=… or `comment=…). Blank lines and lines starting with # are " +
+			"ignored. Matching is case-insensitive. Hits are tagged " + iocTagFor(e.Name) + ".")
 	hint.Wrapping = fyne.TextWrapWord
 
-	top := container.NewVBox(container.NewBorder(nil, nil, widget.NewLabel("Name:"), nil, nameEntry), hint)
-	content := container.NewBorder(top, nil, nil, nil, body)
-	d := dialog.NewCustomConfirm("IOC list", "Save & run", "Cancel", content, func(ok bool) {
-		if !ok {
-			return
-		}
+	var d *dialog.CustomDialog
+	// commit stores the name and indicators; with run set it also scans the open
+	// timeline. Returns false (dialog stays open) if a store failed.
+	commit := func(run bool) bool {
 		if err := a.renameIOCEntry(e, nameEntry.Text); err != nil {
 			a.showError(err)
-			return
+			return false
 		}
 		e.Name = strings.TrimSpace(nameEntry.Text)
 		if err := a.setIOCBody(e, body.Text); err != nil {
 			a.showError(err)
-			return
+			return false
 		}
 		a.refreshIOCSection()
-		if a.view != nil && !a.masterMode {
-			a.runOneIOCList(e)
-		} else {
-			dialog.ShowInformation("IOC list", "Saved. Open a timeline to run it.", a.win)
+		if run {
+			if a.view != nil && !a.masterMode {
+				a.runOneIOCList(e)
+			} else {
+				dialog.ShowInformation("IOC list", "Saved. Open a timeline to run it.", a.win)
+			}
 		}
-	}, a.win)
-	d.Resize(a.dialogSize(720, 620))
+		return true
+	}
+
+	cancel := widget.NewButton("Cancel", func() { d.Hide() })
+	saveBtn := widget.NewButton("Save", func() {
+		if commit(false) {
+			d.Hide()
+		}
+	})
+	saveRun := widget.NewButtonWithIcon("Save & run", theme.MediaPlayIcon(), func() {
+		if commit(true) {
+			d.Hide()
+		}
+	})
+	saveRun.Importance = widget.HighImportance
+	buttons := container.NewBorder(nil, nil, nil, container.NewHBox(cancel, saveBtn, saveRun))
+
+	top := container.NewVBox(container.NewBorder(nil, nil, widget.NewLabel("Name:"), nil, nameEntry), hint)
+	content := container.NewBorder(top, buttons, nil, nil, body)
+	d = dialog.NewCustomWithoutButtons("IOC list", content, a.win)
+	d.Resize(a.dialogSize(720, 660))
 	d.Show()
 }
 
@@ -408,6 +428,11 @@ func (a *App) runIOCList(e iocEntry) (tagged int, set *model.IOCSet, err error) 
 		return 0, nil, nil
 	}
 	scanView := model.NewView(a.idx, a.sess) // scan the full row set, ignoring any filter
+	if a.annotCols {
+		// Skip a source Tags/Comment column adopted as the session's annotations,
+		// so a plain indicator does not match a row on its own tags or comment.
+		scanView.SetAnnotationColumns(a.adopted)
+	}
 	set = scanView.CompileIOCs(text, false)
 	hits, err := scanView.ScanIOCs(set)
 	if err != nil {

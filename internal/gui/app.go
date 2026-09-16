@@ -126,11 +126,23 @@ type App struct {
 	caseList   *fyne.Container // repopulated case/timeline controls
 	iocListBox *fyne.Container // repopulated IOC-list rows
 
-	search     *widget.Entry
+	search     *submitEntry
 	modeSelect *widget.Select
-	taggedChk  *widget.Check
-	caseChk    *widget.Check
-	themeBtn   *widget.Button
+
+	// Bottom filter bar: an always-visible query box (see filterbar.go) sharing
+	// its text with a.search. filterBarEntry takes the typing (its glyphs are
+	// invisible); filterBarRT draws the same text colour-coded by role;
+	// filterBarRTWrap themes that rich text; filterBarBG is the strip fill,
+	// re-coloured on a theme toggle. qSync guards the two-way text mirror between
+	// the bar and a.search so neither callback re-enters the other.
+	filterBarEntry  *widget.Entry
+	filterBarRT     *widget.RichText
+	filterBarRTWrap *container.ThemeOverride
+	filterBarBG     *canvas.Rectangle
+	qSync           bool
+	taggedChk       *widget.Check
+	caseChk         *widget.Check
+	themeBtn        *widget.Button
 
 	statusMode   *widget.Label
 	statusRows   *widget.Label
@@ -275,13 +287,24 @@ func New() *App {
 // they keep their state and callbacks whether the filter window is open, closed
 // or being rebuilt for a new file.
 func (a *App) buildFilterWidgets() {
-	a.search = widget.NewMultiLineEntry()
-	a.search.SetPlaceHolder("text, or field=value AND (tag=bad OR tag=suspicious). /regex/ for regex. Enter to apply, Shift+Enter for newline")
+	a.search = newSubmitEntry()
+	a.search.SetPlaceHolder("text, or field=value AND (tag=bad OR tag=suspicious). /regex/ for regex. Enter to apply, Ctrl+Enter for newline")
 	a.search.Wrapping = fyne.TextWrapWord
 	// At least five rows on open; the multi-line entry grows past that as more
 	// lines are added.
 	a.search.SetMinRowsVisible(5)
 	a.search.OnSubmitted = func(string) { a.commitFilter() }
+	// Mirror edits into the bottom filter bar (and vice versa, see filterbar.go).
+	// qSync stops the two boxes from bouncing the change back and forth.
+	a.search.OnChanged = func(s string) {
+		if a.qSync || a.filterBarEntry == nil {
+			return
+		}
+		a.qSync = true
+		a.filterBarEntry.SetText(s)
+		a.qSync = false
+		a.refreshFilterBarColors()
+	}
 	a.taggedChk = widget.NewCheck("Tagged only", func(bool) { a.commitFilter() })
 	a.caseChk = widget.NewCheck("Case sensitive", func(bool) { a.commitFilter() })
 }
@@ -409,7 +432,8 @@ func (a *App) buildUI() {
 	a.outerSplit = container.NewHSplit(a.leftScroll, a.split)
 	a.outerSplit.Offset = viewsSidebarOffset
 
-	body := container.NewBorder(a.buildToolbar(), a.buildStatusBar(), nil, nil, a.outerSplit)
+	bottom := container.NewVBox(a.buildStatusBar(), a.buildFilterBar())
+	body := container.NewBorder(a.buildToolbar(), bottom, nil, nil, a.outerSplit)
 	// The hover layer floats above everything but captures no input.
 	content := container.NewStack(body, a.hoverLayer)
 	a.win.SetContent(content)

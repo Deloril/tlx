@@ -52,6 +52,11 @@ func (a *App) toggleTheme() {
 		a.statusBG.FillColor = a.fyne.Settings().Theme().Color(theme.ColorNameInputBackground, a.themeVariant)
 		a.statusBG.Refresh()
 	}
+	if a.filterBarBG != nil {
+		a.filterBarBG.FillColor = a.fyne.Settings().Theme().Color(theme.ColorNameInputBackground, a.themeVariant)
+		a.filterBarBG.Refresh()
+	}
+	a.refreshFilterBarColors() // re-pick the role colours for the new variant
 	a.updateThemeButton()
 }
 

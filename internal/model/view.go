@@ -19,6 +19,7 @@ const (
 	ColRowNum  ColumnRef = -3   // the original CSV row number (display only)
 	ColAll     ColumnRef = -100 // match against every column
 	ColNone    ColumnRef = -101 // no column (disables text matching)
+	ColData    ColumnRef = -102 // every data column, skipping the Tags/Comment fields
 )
 
 // Overlay supplies the per-row data that lives outside the CSV: tags, comments
@@ -97,17 +98,26 @@ type View struct {
 	rows     []int
 	filter   FilterSpec
 	sortKeys []SortKey
+
+	// annot names source columns adopted as the session's tags/comments. ColData
+	// matching skips them so an IOC does not hit a row on its own annotation text.
+	annot AdoptedColumns
 }
 
 // NewView returns an unfiltered, unsorted view of every row.
 func NewView(idx *Index, ov Overlay) *View {
-	v := &View{idx: idx, ov: ov}
+	v := &View{idx: idx, ov: ov, annot: AdoptedColumns{Tag: -1, Comment: -1}}
 	v.rows = make([]int, idx.RowCount())
 	for i := range v.rows {
 		v.rows[i] = i
 	}
 	return v
 }
+
+// SetAnnotationColumns records which source columns hold adopted tags/comments.
+// ColData matching (used by IOC scans) skips them, alongside the virtual
+// Tags/Comment columns, so an indicator does not match a row on annotation text.
+func (v *View) SetAnnotationColumns(ac AdoptedColumns) { v.annot = ac }
 
 // Len is the number of rows currently visible.
 func (v *View) Len() int { return len(v.rows) }
@@ -369,16 +379,30 @@ func (v *View) condHit(row int, rec []string, c compiledCond) bool {
 	return c.all
 }
 
-// columnMatch reports whether the matcher hits the given column, or any column
-// when ref is ColAll.
+// columnMatch reports whether the matcher hits the given column. ColAll matches
+// every column including the virtual Tags/Comment; ColData matches the data
+// columns only, skipping the tag/comment fields.
 func (v *View) columnMatch(row int, rec []string, ref ColumnRef, m matcher) bool {
-	if ref != ColAll {
+	switch ref {
+	case ColAll:
+		if m.match(v.cell(row, rec, ColTags)) || m.match(v.cell(row, rec, ColComment)) {
+			return true
+		}
+		return v.dataMatch(row, rec, m, false)
+	case ColData:
+		return v.dataMatch(row, rec, m, true)
+	default:
 		return m.match(v.cell(row, rec, ref))
 	}
-	if m.match(v.cell(row, rec, ColTags)) || m.match(v.cell(row, rec, ColComment)) {
-		return true
-	}
+}
+
+// dataMatch matches m against the record's data columns. When skipAnnot is set,
+// columns adopted as the session's tags/comments are skipped.
+func (v *View) dataMatch(row int, rec []string, m matcher, skipAnnot bool) bool {
 	for c := 0; c < len(rec); c++ {
+		if skipAnnot && v.annot.Has(c) {
+			continue
+		}
 		if m.match(v.cell(row, rec, ColumnRef(c))) {
 			return true
 		}

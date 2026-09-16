@@ -12,12 +12,68 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+// submitEntry is a multi-line entry where a plain Enter fires OnSubmitted — the
+// box's apply/save action — and Ctrl/Cmd+Enter inserts a newline. That is the
+// reverse of Fyne's default (Enter makes a newline, Shift+Enter submits). A box
+// that sets no OnSubmitted keeps Enter as a newline, so free-text fields (the
+// comments panel, a per-line value list, an IOC indicator list) are unaffected.
+type submitEntry struct {
+	widget.Entry
+	modDown bool // Ctrl or Cmd held, so Enter should insert a newline
+}
+
+func newSubmitEntry() *submitEntry {
+	e := &submitEntry{}
+	e.MultiLine = true
+	e.Wrapping = fyne.TextWrapWord
+	e.ExtendBaseWidget(e)
+	return e
+}
+
+// isNewlineModifier reports whether a key is a modifier that turns Enter into a
+// newline rather than a submit (Ctrl, or Cmd on macOS).
+func isNewlineModifier(name fyne.KeyName) bool {
+	switch name {
+	case desktop.KeyControlLeft, desktop.KeyControlRight, desktop.KeySuperLeft, desktop.KeySuperRight:
+		return true
+	}
+	return false
+}
+
+// KeyDown/KeyUp track the newline modifier the way Fyne's Entry tracks Shift; the
+// KeyEvent passed to TypedKey carries no modifier field, so state must be kept.
+func (e *submitEntry) KeyDown(key *fyne.KeyEvent) {
+	if isNewlineModifier(key.Name) {
+		e.modDown = true
+	}
+	e.Entry.KeyDown(key)
+}
+
+func (e *submitEntry) KeyUp(key *fyne.KeyEvent) {
+	if isNewlineModifier(key.Name) {
+		e.modDown = false
+	}
+	e.Entry.KeyUp(key)
+}
+
+func (e *submitEntry) TypedKey(key *fyne.KeyEvent) {
+	if key.Name == fyne.KeyReturn || key.Name == fyne.KeyEnter {
+		// Plain Enter submits; with the modifier held, fall through so Fyne inserts
+		// a newline (it only submits on Shift, which we never combine here).
+		if !e.modDown && e.OnSubmitted != nil {
+			e.OnSubmitted(e.Text)
+			return
+		}
+	}
+	e.Entry.TypedKey(key)
+}
+
 // growEntry is a multi-line entry that grows to fit its text and can be resized
 // by dragging the grip along its bottom edge. Auto-fit tracks the wrapped line
 // count (floored at minRows, capped at maxRows so one huge cell can't fill the
 // pane); dragging the grip adds or removes rows on top of the fitted height.
 type growEntry struct {
-	widget.Entry
+	submitEntry
 	minRows   int
 	maxRows   int
 	extraRows int     // rows added (or, negative, removed) by dragging the grip
@@ -156,9 +212,9 @@ func (g *entryGrip) Dragged(e *fyne.DragEvent) {
 		g.onDrag(e.Dragged.DY)
 	}
 }
-func (g *entryGrip) DragEnd()                   {}
-func (g *entryGrip) Cursor() desktop.Cursor     { return desktop.VResizeCursor }
-func (g *entryGrip) MinSize() fyne.Size         { return fyne.NewSize(24, 9) }
+func (g *entryGrip) DragEnd()               {}
+func (g *entryGrip) Cursor() desktop.Cursor { return desktop.VResizeCursor }
+func (g *entryGrip) MinSize() fyne.Size     { return fyne.NewSize(24, 9) }
 func (g *entryGrip) CreateRenderer() fyne.WidgetRenderer {
 	col := g.Theme().Color(theme.ColorNameInputBorder, fyne.CurrentApp().Settings().ThemeVariant())
 	r := &gripRenderer{g: g}

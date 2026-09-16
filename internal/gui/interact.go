@@ -547,9 +547,9 @@ func (a *App) onCellPress(row, col int) {
 	a.lastClickRow, a.lastClickCol = row, col
 }
 
-// onCellDoubleClick pops out a cell's full contents in a read-only window. It
-// works on editable cells too: opening the popout pulls focus off the inline
-// editor, which commits any typed text on the way out.
+// onCellDoubleClick pops out a cell's full contents in its own window. Opening
+// the popout pulls focus off any inline editor, which commits typed text on the
+// way out.
 func (a *App) onCellDoubleClick(row, col int) {
 	if a.view == nil || row < 0 || row >= a.view.Len() || col < 0 || col >= len(a.visible) {
 		return
@@ -558,21 +558,56 @@ func (a *App) onCellDoubleClick(row, col int) {
 	a.showCellPopout(c.title, a.view.Master(row), c.ref)
 }
 
-// showCellPopout opens a small window with the full cell text, selectable and
-// copyable (and note-capturable, like the detail pane), for a value too big to
-// read in the grid.
+// showCellPopout opens a small window with the full cell text, for a value too
+// big to read in the grid. It inherits the cell's edit permission: a cell that
+// can be typed into inline (a comment in Investigator, any column in
+// world-write) opens an editable box; anything else opens a read-only,
+// selectable, note-capturable label like the detail pane.
 func (a *App) showCellPopout(title string, master int, ref model.ColumnRef) {
 	a.hideTooltip()
-	body := newSelectableLabel(a, master, a.valueOf(master, ref))
 	label := widget.NewLabelWithStyle(
 		fmt.Sprintf("%s — row %d", title, master+1), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	w := a.fyne.NewWindow(title + " — tlx")
 	onTop := true // pop-outs float above the main window by default; the pin toggles it
 	header := container.NewBorder(nil, nil, label, newAlwaysOnTopButton(w, &onTop), nil)
-	w.SetContent(container.NewBorder(header, nil, nil, nil, container.NewVScroll(body)))
+
+	var body fyne.CanvasObject
+	if a.cellEditable(ref) {
+		ge, geBox := newResizableEntry(3)
+		ge.SetText(a.valueOf(master, ref))
+		ge.OnSubmitted = func(s string) { a.writeCellPopout(master, ref, s) }
+		body = container.NewBorder(
+			widget.NewLabel("Enter to save, Ctrl+Enter for newline:"), nil, nil, nil, geBox)
+	} else {
+		body = container.NewVScroll(newSelectableLabel(a, master, a.valueOf(master, ref)))
+	}
+
+	w.SetContent(container.NewBorder(header, nil, nil, nil, body))
 	w.Resize(fyne.NewSize(520, 360))
 	w.Show()
 	applyAlwaysOnTop(w, onTop) // Show() creates the native window; now the handle is live
+}
+
+// writeCellPopout persists an edit made in a cell pop-out (comment or, in
+// world-write, a data cell) and refreshes the grid and detail pane. Unlike
+// commitInlineEdit it carries no a.editing guard, since the pop-out owns its
+// own editor rather than the grid's inline one.
+func (a *App) writeCellPopout(master int, ref model.ColumnRef, s string) {
+	var err error
+	switch ref {
+	case model.ColComment:
+		err = a.sess.SetComment(master, s)
+	default:
+		err = a.sess.SetCell(master, int(ref), s)
+	}
+	if err != nil {
+		a.showError(err)
+		return
+	}
+	if a.sidebarVisible && a.selectedMaster() >= 0 {
+		a.showDetail(a.selectedMaster())
+	}
+	a.refreshTable()
 }
 
 // Hover tooltip. Rendered as a non-interactive overlay layer inside the content

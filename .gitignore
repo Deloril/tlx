@@ -12,3 +12,6 @@
 
 # Local, machine-specific Claude settings
 .claude/settings.local.json
+
+# Krita autosaves left beside the icon source
+*-autosave.kra
