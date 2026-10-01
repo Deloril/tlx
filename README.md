@@ -1,4 +1,4 @@
-_proper up front, this application is pure AI slop. It's been developed with Claude, and until you do, no human has reviewed the code. Appears to work great, but you have been warned._
+_proper up front, this application is pure AI slop. It's been developed with Claude, and until you do, no human has reviewed the code. It was designed to help teach the concepts of tagging, pivoting, and following leads, and has no certifications or statements of reliability for production use. Appears to work great, but you have been warned._
 
 # Timeline explorer
 
