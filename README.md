@@ -143,53 +143,52 @@ as the first CSV row.
 
 ## Running
 
-    tlx [-mode ro|investigator|world] <file.csv>
+    tlx [file.csv]
 
-The default mode is investigator, so tags and comments work straight away; pass
-`-mode ro` for a read-only session.
+Pass a CSV to open it on launch, or start with none and open one from the File
+menu. It opens in investigator mode, so tags and comments work straight away.
+
+A headless diagnostic is built in for load testing:
+
+    tlx --bench <file.csv> [-q <query>] [-sort <col>]
+
+It reports index time, row count, memory, and serial vs parallel filter timings.
 
 ## Building
 
-The engine (`internal/model`) is pure Go. The GUI (`internal/gui`) uses
-[Fyne](https://fyne.io), which needs cgo and the platform's GL/windowing
-headers.
+tlx is a Rust/egui app. Version 2.0 is a port of the original Go+Fyne tool to
+Rust; the engine and GUI are a single crate with no cgo. You need a stable Rust
+toolchain ([rustup](https://rustup.rs)).
 
-**macOS** — build on a Mac with the Xcode command line tools (`xcode-select
---install`). Cross-compiling a cgo GUI from Linux needs osxcross and the Apple
-SDK, so it is not done from this repo's Linux box.
+    cargo build --release        # -> target/release/tlx
+    cargo test                   # engine unit tests
 
-    make mac              # native binary -> tlx-darwin
-    make mac-universal    # arm64 + amd64 fat binary (needs lipo)
+**Linux** also needs the GL/windowing dev headers:
 
-For a double-clickable `.app` bundle:
+    sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
 
-    go install fyne.io/tools/cmd/fyne@latest
-    fyne package -os darwin --name tlx --src ./cmd/tlx
+**Windows** embeds `packaging/windows/tlx.ico` into the exe at build time (see
+`build.rs`) and links as a GUI app, so no console window opens.
 
-**Linux** — install the dev headers, then `make build`:
-
-    sudo apt-get install -y libgl1-mesa-dev xorg-dev
-
-**Windows** — build on Windows with a MinGW-w64 gcc (e.g. via MSYS2), or
-cross-compile with a mingw-w64 toolchain:
-
-    make windows          # -> tlx.exe
+Release bundles for Linux (AppImage), macOS (universal `.app`) and Windows
+(icon-embedded `.exe`) are built by CI on every push; pushing a `v*` tag also
+publishes them as a GitHub release.
 
 ## Layout
 
-    cmd/tlx           GUI entry point
-    cmd/tlxcheck      headless diagnostic: index/filter/sort timings + memory
-    cmd/gentestdata   synthetic timeline generator for load testing
-    internal/model    the engine — indexing, view, session, export (pure Go, tested)
-    internal/gui      the Fyne front end (embeds icon.png as the app icon)
+    src/main.rs       entry point: GUI launch and the --bench diagnostic
+    src/app.rs        the egui front end
+    src/engine        the engine — indexing, view, session, export (tested)
+    src/prefs.rs      window/UI preferences
+    build.rs          embeds the Windows icon into the exe
     packaging         icon generator and per-OS bundle assets (.icns, .ico)
+    assets/icon.png   1024px app icon, embedded in the binary and shown on the window
 
 `packaging/icon/icon-master.png` is the full-resolution source art, kept for
-the README and other high-res uses. `internal/gui/icon.png` is the 1024px
-version embedded in the binary and shown on the window. After changing the art,
-downscale the master to 1024px into `internal/gui/icon.png`, then run
-`python3 packaging/icon/gen_icon.py` (needs Pillow) to rebuild the macOS `.icns`
-and Windows `.ico` from it.
+the README and other high-res uses. `assets/icon.png` is the 1024px version
+embedded in the binary. After changing the art, downscale the master to 1024px
+into `assets/icon.png`, then run `python3 packaging/icon/gen_icon.py` (needs
+Pillow) to rebuild the macOS `.icns` and Windows `.ico` from it.
 
 ## License
 

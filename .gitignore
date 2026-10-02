@@ -1,11 +1,14 @@
+# Rust build output
+/target
+
 # Build artifacts
 /tlx
 /tlx-*
 /*.exe
 /dist/
 
-# Windows resource object, generated during the Windows build from the .ico
-*.syso
+# macOS Finder droppings
+.DS_Store
 
 # Annotation sidecars written next to opened CSVs
 *.tlx.json

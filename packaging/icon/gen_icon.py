@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Derive the platform icon variants from the master app icon.
 
-internal/gui/icon.png is the source of truth: the icon embedded in the binary
+assets/icon.png is the source of truth: the icon embedded in the binary
 and shown on the running window. This script reads it and writes the Windows
 and macOS containers from it, so Explorer and Finder show the same art. It does
 not draw or overwrite the master.
@@ -32,7 +32,7 @@ def build_icns(png_by_type, path):
 
 def main():
     root = os.getcwd()
-    png_path = os.path.join(root, "internal", "gui", "icon.png")
+    png_path = os.path.join(root, "assets", "icon.png")
     master = Image.open(png_path).convert("RGBA")
 
     ico_path = os.path.join(root, "packaging", "windows", "tlx.ico")
