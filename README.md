@@ -1,12 +1,28 @@
-_proper up front, this application is pure AI slop. It's been developed with Claude, and until you do, no human has reviewed the code. It was designed to help teach the concepts of tagging, pivoting, and following leads, and has no certifications or statements of reliability for production use. Appears to work great, but you have been warned._
-
 # Timeline explorer
+
+## Read this first: what this is for
+
+This is a teaching tool. It was built to help people learn the core moves of
+timeline analysis — following a pivot, recognising an indicator, tagging what
+matters, and building a timeline of events — on real-shaped data, in a desktop
+app that behaves like the commercial ones. That is the whole reason it exists.
+
+It has no accreditation, certification, or validation for live incident
+response, and it never will. Nothing here has been tested to any forensic
+soundness standard, there is no chain-of-custody guarantee, and the results are
+not fit to present as evidence. Treat every output as a learning exercise, not
+a finding.
+
+That is not "don't use it". Use it to practise, to teach, to run a workshop, to
+get a feel for the workflow before you sit in front of accredited tools. Just
+don't mistake it for one of them, and don't put it on the critical path of a
+real case.
 
 > **This code is entirely AI-generated.** Every line was written by an AI
 > assistant. None of it has been hand-written, and none of it has been read,
-> reviewed or audited by a person. Use it accordingly: read the code yourself
-> before you trust it with real evidence, and don't assume it's correct or safe
-> because it compiles and runs.
+> reviewed or audited by a person. Read the code yourself before you trust it
+> with anything, and don't assume it's correct or safe because it compiles and
+> runs.
 
 A native desktop viewer and annotator for large forensic CSV timelines — the
 kind Eric Zimmerman's tools emit (`Alert, Tag, Timestamp, Field, Summary` and
@@ -17,9 +33,10 @@ It does CSV/TSV and nothing else. No EVTX, no registry hives, no artefact
 parsing — point another tool at the raw evidence and feed the CSV here.
 
 It's inspired by Eric Zimmerman's Timeline Explorer and by Timesketch, but built
-for a single examiner, not a team. There's no server, no shared database and no
-accounts — it's a desktop app that opens a file. Next to Timesketch it's far
-lighter: nothing to deploy and nothing to run but the binary.
+for one person learning the workflow, not a team working a case. There's no
+server, no shared database and no accounts — it's a desktop app that opens a
+file. The point is to make the moves of timeline analysis cheap to practise:
+open a file, filter it, spot an indicator, tag it, pivot on it, write it up.
 
 ## Modes
 
@@ -41,15 +58,16 @@ header.
 ## How it handles large files
 
 Opening a file scans it once to record the byte offset of every record, keeping
-one `int64` per row rather than the row contents. A 359 MB, 1.6M-row timeline
-indexes in about a second and sits in ~15 MB of heap; rows are read and parsed
-on demand as you scroll, with a small LRU cache. The scan is quote-aware, so
-`Summary` fields containing commas and embedded newlines are treated as single
-records.
+one 8-byte offset per row rather than the row contents, so memory stays
+proportional to row count, not file size. A multi-GB, multi-million-row timeline
+indexes in a second or two; rows are read and parsed on demand as you scroll,
+with a small LRU cache. The scan is quote-aware, so `Summary` fields containing
+commas and embedded newlines are treated as single records.
 
-Filtering and sorting each make one sequential pass over the file. On a
-multi-GB file that pass takes a few seconds; there is no background column
-store, so this is the deliberate trade for low memory and instant open.
+Filtering reads the file in parallel — one worker per core — with a progress
+bar and a Cancel button, so a multi-GB pass finishes in a fraction of the time a
+single thread would take. Sorting makes one pass. There is no background column
+store; this is the deliberate trade for low memory and instant open.
 
 ## Keyboard and mouse
 
@@ -67,13 +85,13 @@ The filter box takes a query. A bare word matches any column; `Field=value`
 matches one column (case-insensitive by default), and terms combine with
 `AND`/`OR`/`NOT` and parentheses, e.g.
 `Summary=derp AND (tag=bad OR tag=suspicious)`. Wrap a value in `/…/` for a
-regular expression. The toolbar's Filter row button (or Ctrl+Shift+F) reveals a
-box under each column header that filters just that column; press Enter to
-apply, and a lone `*` keeps rows where the column is non-empty. Under the Tags
-column the box is a tag drop-down rather than a text box. The filter row is off
-by default because it makes the grid rows taller. The Clear filters button (or
-Esc) drops everything at once. "Tagged only" limits the view to annotated rows.
-Whatever the filter matches is highlighted in the grid and in the hover tooltip.
+regular expression. The toolbar's Filter row toggle shows a box under each
+column header that filters just that column; press Enter to apply, and a lone
+`*` keeps rows where the column is non-empty. Under the Tags column the box is a
+tag drop-down rather than a text box. The filter row is on by default; toggle it
+off if you want shorter grid rows. The Clear filters button (or Esc) drops
+everything at once. "Tagged only" limits the view to annotated rows. Whatever
+the filter matches is highlighted in the grid and in the hover tooltip.
 
 The Filter panel's Tags button opens the same checklist of every tag; tick one
 or more to keep rows carrying any of them, without typing `tag=`.
@@ -82,6 +100,15 @@ Right-click a cell holding a timestamp for "Filter ±5 min around this time",
 which narrows that column to a 5-minute window either side of the value. The
 same menu adds a timestamp to the notes' Times list, or any other cell to the
 Artifacts list (see below).
+
+The right-click menu doesn't just offer the whole cell. It pulls out the
+indicators it can recognise inside the cell — IPs, hashes, domains, paths,
+GUIDs, emails — and lists each as a one-click add to Artifacts, with the raw
+whitespace tokens and the whole cell underneath. Adding one keeps the menu open
+so you can tick off several, and if a cell holds more than twenty candidates a
+"review all" option pops the full list into its own window. This is where the
+indicator-spotting practice lives: the tool surfaces what looks interesting, you
+decide what's worth keeping.
 
 Timestamp columns compare with `before`, `after` and `between`, e.g.
 `Timestamp between 2020 and 2021` or `Timestamp after now - 7d`. A bare year,
@@ -145,8 +172,10 @@ as the first CSV row.
 
     tlx [file.csv]
 
-Pass a CSV to open it on launch, or start with none and open one from the File
-menu. It opens in investigator mode, so tags and comments work straight away.
+Pass a CSV to open it on launch, or start with none and use the toolbar's
+"Open CSV…" button. It opens in investigator mode, so tags and comments work
+straight away; switch to Read-only or World-write from the mode drop-down in the
+toolbar.
 
 A headless diagnostic is built in for load testing:
 
