@@ -17,7 +17,22 @@
 //! reaches them only when it names the field, e.g. `tag=beacon or
 //! `comment=/psexec/.
 //!
-//! Blank lines and lines beginning with # are ignored. Matching is
+//! Lines beginning with a single # are ignored. A line beginning with ## is a
+//! comment too, but it labels the block of indicators that follows it: every
+//! indicator up to the next blank line inherits the ## text, and when one hits
+//! a row the text is merged into the row's comment (prepended if the comment
+//! is non-empty and does not already contain it). A blank line ends the block,
+//! so indicators after it carry no comment until the next ##. A new ## starts
+//! a fresh block. So in
+//!
+//!   ## Test
+//!   1
+//!   2
+//!   3
+//!
+//!   4
+//!
+//! indicators 1, 2 and 3 carry "Test" and 4 carries nothing. Matching is
 //! case-insensitive unless the caller asks otherwise.
 
 use super::view::{Matcher, RowPred, View, COL_DATA};
@@ -34,17 +49,24 @@ pub struct IOCError {
     pub err: String,
 }
 
-/// IOCSet is a compiled IOC list: one predicate per usable line, plus the
+/// A compiled indicator: its row predicate and the ## comment (if any) from
+/// the line directly above it, to stamp onto rows this indicator hits.
+struct Indicator<'a> {
+    pred: RowPred<'a>,
+    comment: Option<String>,
+}
+
+/// IOCSet is a compiled IOC list: one indicator per usable line, plus the
 /// errors for any lines that did not compile.
 pub struct IOCSet<'a> {
-    preds: Vec<RowPred<'a>>,
+    indicators: Vec<Indicator<'a>>,
     pub errors: Vec<IOCError>,
 }
 
 impl<'a> IOCSet<'a> {
     /// Count is the number of usable indicators compiled.
     pub fn count(&self) -> usize {
-        self.preds.len()
+        self.indicators.len()
     }
 }
 
@@ -53,15 +75,29 @@ impl<'a> View<'a> {
     /// names in backtick filter lines resolve against the view's headers,
     /// so compile against a view of the timeline being scanned.
     pub fn compile_iocs(&'a self, text: &str, cased: bool) -> IOCSet<'a> {
-        let mut set = IOCSet { preds: Vec::new(), errors: Vec::new() };
+        let mut set = IOCSet { indicators: Vec::new(), errors: Vec::new() };
         let now = chrono::Utc::now();
+        // The ## comment labelling the current block of indicators. A ## line
+        // starts a block, a blank line ends it; every indicator in between
+        // inherits the comment. A plain-# line is ignored without ending the
+        // block.
+        let mut block: Option<String> = None;
         for (n, raw) in text.split('\n').enumerate() {
             let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
+            if let Some(rest) = line.strip_prefix("##") {
+                let rest = rest.trim();
+                block = (!rest.is_empty()).then(|| rest.to_string());
+                continue;
+            }
+            if line.is_empty() {
+                block = None;
+                continue;
+            }
+            if line.starts_with('#') {
                 continue;
             }
             match self.compile_ioc_line(line, cased, now) {
-                Ok(pred) => set.preds.push(pred),
+                Ok(pred) => set.indicators.push(Indicator { pred, comment: block.clone() }),
                 Err(e) => set.errors.push(IOCError { line: n + 1, text: line.to_string(), err: e }),
             }
         }
@@ -90,35 +126,38 @@ impl<'a> View<'a> {
 
     /// ScanIOCs runs the compiled indicators over every row of the
     /// underlying index and returns the master indices of rows that hit at
-    /// least one. It scans the full row set, not the current filtered view,
-    /// so a filter in place does not hide matches.
-    pub fn scan_iocs(&self, set: &IOCSet) -> std::io::Result<Vec<usize>> {
+    /// least one, each paired with the ## comment of the first indicator it
+    /// hit (None if that indicator carried no comment). It scans the full row
+    /// set, not the current filtered view, so a filter in place does not hide
+    /// matches.
+    pub fn scan_iocs(&self, set: &IOCSet) -> std::io::Result<Vec<(usize, Option<String>)>> {
         let mut hits = Vec::new();
-        self.scan_iocs_range(set, 0, self.idx.row_count(), |i| {
-            hits.push(i);
+        self.scan_iocs_range(set, 0, self.idx.row_count(), |i, comment| {
+            hits.push((i, comment.map(str::to_string)));
             true
         })?;
         Ok(hits)
     }
 
     /// scan_iocs_range runs the compiled indicators over rows [lo, hi),
-    /// calling `on_hit` with each matching master index. Returning false from
-    /// `on_hit` stops the scan (used for cancellation). Scans its own file
-    /// range, so the parallel IOC runner can fan out over chunks.
-    pub fn scan_iocs_range<F: FnMut(usize) -> bool>(
+    /// calling `on_hit` with each matching master index and the ## comment of
+    /// the first indicator that matched it. Returning false from `on_hit`
+    /// stops the scan (used for cancellation). Scans its own file range, so
+    /// the parallel IOC runner can fan out over chunks.
+    pub fn scan_iocs_range<F: FnMut(usize, Option<&str>) -> bool>(
         &self,
         set: &IOCSet,
         lo: usize,
         hi: usize,
         mut on_hit: F,
     ) -> std::io::Result<()> {
-        if set.preds.is_empty() {
+        if set.indicators.is_empty() {
             return Ok(());
         }
         self.idx.scan_range(lo, hi, |i, rec| {
-            for p in &set.preds {
-                if p(i, rec) {
-                    return on_hit(i);
+            for ind in &set.indicators {
+                if (ind.pred)(i, rec) {
+                    return on_hit(i, ind.comment.as_deref());
                 }
             }
             true
@@ -160,6 +199,11 @@ mod tests {
         Index::new_memory(headers, records)
     }
 
+    /// Drop the per-hit comments, keeping just the master indices.
+    fn rows(hits: Vec<(usize, Option<String>)>) -> Vec<usize> {
+        hits.into_iter().map(|(i, _)| i).collect()
+    }
+
     fn ioc_idx() -> Index {
         mk_idx(
             &["Timestamp", "Summary", "Host"],
@@ -182,7 +226,7 @@ mod tests {
         assert!(set.errors.is_empty(), "unexpected compile errors: {:?}", set.errors);
         assert_eq!(set.count(), 4);
         let hits = v.scan_iocs(&set).unwrap();
-        assert_eq!(hits, vec![0, 2, 3]);
+        assert_eq!(rows(hits), vec![0, 2, 3]);
     }
 
     #[test]
@@ -215,10 +259,10 @@ mod tests {
         };
         let v = View::new(&idx, &ov);
         let hits = v.scan_iocs(&v.compile_iocs("beacon\npsexec\n", false)).unwrap();
-        assert_eq!(hits, vec![3]);
+        assert_eq!(rows(hits), vec![3]);
 
         let hits = v.scan_iocs(&v.compile_iocs("`tag=beacon\n", false)).unwrap();
-        assert_eq!(hits, vec![1]);
+        assert_eq!(rows(hits), vec![1]);
     }
 
     #[test]
@@ -228,7 +272,7 @@ mod tests {
         let mut v = View::new(&idx, &ov);
         v.set_annotation_columns(AdoptedColumns { tag: 1, comment: -1 });
         let hits = v.scan_iocs(&v.compile_iocs("beacon\n", false)).unwrap();
-        assert_eq!(hits, vec![1]);
+        assert_eq!(rows(hits), vec![1]);
     }
 
     #[test]
@@ -238,5 +282,50 @@ mod tests {
         let v = View::new(&idx, &ov);
         let hits = v.scan_iocs(&v.compile_iocs("# nothing but a comment\n", false)).unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn test_ioc_double_hash_labels_block() {
+        let idx = ioc_idx();
+        let ov = TestOverlay::default();
+        let v = View::new(&idx, &ov);
+        // Every indicator in the block under ## inherits the comment; the ##
+        // line itself never matches a row.
+        let list = "## lateral movement\npsexec\n/T[0-9]{4}/";
+        let set = v.compile_iocs(list, false);
+        assert!(set.errors.is_empty(), "unexpected errors: {:?}", set.errors);
+        assert_eq!(set.count(), 2);
+        let hits = v.scan_iocs(&set).unwrap();
+        assert_eq!(
+            hits,
+            vec![
+                (0, Some("lateral movement".to_string())),
+                (3, Some("lateral movement".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ioc_double_hash_block_ends_at_blank() {
+        // ## Test / psexec / <blank> / T-regex: the first indicator carries
+        // "Test", the one after the blank line carries nothing.
+        let idx = ioc_idx();
+        let ov = TestOverlay::default();
+        let v = View::new(&idx, &ov);
+        let list = "## Test\npsexec\n\n/T[0-9]{4}/";
+        let hits = v.scan_iocs(&v.compile_iocs(list, false)).unwrap();
+        assert_eq!(hits, vec![(0, Some("Test".to_string())), (3, None)]);
+    }
+
+    #[test]
+    fn test_ioc_double_hash_plain_hash_keeps_block() {
+        // A plain-# line inside a block is ignored but does not end it: the
+        // indicator after it still inherits the comment.
+        let idx = ioc_idx();
+        let ov = TestOverlay::default();
+        let v = View::new(&idx, &ov);
+        let list = "## Test\n# just a note\npsexec";
+        let hits = v.scan_iocs(&v.compile_iocs(list, false)).unwrap();
+        assert_eq!(hits, vec![(0, Some("Test".to_string()))]);
     }
 }

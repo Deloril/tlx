@@ -32,6 +32,15 @@ pub enum ScanOutcome {
     Cancelled,
 }
 
+/// Outcome of a cancellable IOC scan. Like ScanOutcome but each hit carries
+/// the ## comment of the indicator that matched it (None if none).
+pub enum IocOutcome {
+    /// Completed: (master row, indicator comment) pairs, ascending by row.
+    Done(Vec<(usize, Option<String>)>),
+    /// The cancel flag was set before the scan finished.
+    Cancelled,
+}
+
 /// chunk_count picks the worker count: the hardware parallelism, capped so a
 /// tiny row set does not spawn more threads than it has work for.
 fn worker_count(n_rows: usize) -> usize {
@@ -166,9 +175,10 @@ fn scan_chunk(
 }
 
 /// parallel_ioc scans every row against a compiled IOC list, returning the
-/// master indices that hit at least one indicator (ascending). Same threading
-/// and cancellation model as parallel_filter; the predicates are recompiled
-/// per worker from `body` so each borrows its own View.
+/// master indices that hit at least one indicator (ascending), each paired
+/// with the ## comment of the first indicator it hit. Same threading and
+/// cancellation model as parallel_filter; the predicates are recompiled per
+/// worker from `body` so each borrows its own View.
 pub fn parallel_ioc(
     idx: &Index,
     ov: &(dyn Overlay + Sync),
@@ -177,11 +187,11 @@ pub fn parallel_ioc(
     annot: AdoptedColumns,
     progress: &AtomicUsize,
     cancel: &AtomicBool,
-) -> ScanOutcome {
+) -> IocOutcome {
     let n = idx.row_count();
     progress.store(0, Ordering::Relaxed);
     if n == 0 {
-        return ScanOutcome::Done(Vec::new());
+        return IocOutcome::Done(Vec::new());
     }
 
     let workers = worker_count(n);
@@ -194,7 +204,7 @@ pub fn parallel_ioc(
         lo = hi;
     }
 
-    let results: Vec<Vec<usize>> = std::thread::scope(|scope| {
+    let results: Vec<Vec<(usize, Option<String>)>> = std::thread::scope(|scope| {
         let handles: Vec<_> = ranges
             .iter()
             .map(|&(lo, hi)| {
@@ -207,8 +217,8 @@ pub fn parallel_ioc(
                     }
                     let mut hits = Vec::new();
                     let mut since_check = 0usize;
-                    let _ = view.scan_iocs_range(&set, lo, hi, |i| {
-                        hits.push(i);
+                    let _ = view.scan_iocs_range(&set, lo, hi, |i, comment| {
+                        hits.push((i, comment.map(str::to_string)));
                         since_check += 1;
                         if since_check >= CHECK_EVERY {
                             progress.fetch_add(since_check, Ordering::Relaxed);
@@ -228,13 +238,13 @@ pub fn parallel_ioc(
     });
 
     if cancel.load(Ordering::Relaxed) {
-        return ScanOutcome::Cancelled;
+        return IocOutcome::Cancelled;
     }
     let mut matched = Vec::new();
     for r in results {
         matched.extend(r);
     }
-    ScanOutcome::Done(matched)
+    IocOutcome::Done(matched)
 }
 
 #[cfg(test)]
@@ -355,10 +365,11 @@ mod tests {
             &cancel,
         );
         let got = match out {
-            ScanOutcome::Done(rows) => rows,
-            ScanOutcome::Cancelled => panic!("unexpected cancel"),
+            IocOutcome::Done(hits) => hits,
+            IocOutcome::Cancelled => panic!("unexpected cancel"),
         };
-        let want: Vec<usize> = (0..250_000).filter(|i| i % 2 == 1).collect();
+        let want: Vec<(usize, Option<String>)> =
+            (0..250_000).filter(|i| i % 2 == 1).map(|i| (i, None)).collect();
         assert_eq!(got, want);
     }
 

@@ -173,7 +173,7 @@ as the first CSV row.
     tlx [file.csv]
 
 Pass a CSV to open it on launch, or start with none and use the toolbar's
-"Open CSV…" button. It opens in investigator mode, so tags and comments work
+"Open Timeline…" button. It opens in investigator mode, so tags and comments work
 straight away; switch to Read-only or World-write from the mode drop-down in the
 toolbar.
 

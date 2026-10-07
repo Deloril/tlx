@@ -195,8 +195,9 @@ enum JobResult {
     /// Filter finished: the matched rows, already sorted.
     Filter(Result<Vec<usize>, String>),
     /// IOC finished: for each list scanned, its "ioc:<name>" tag and the
-    /// master rows that hit. One entry for a single list, several for run-all.
-    Ioc(Vec<(String, Vec<usize>)>),
+    /// master rows that hit, each paired with the ## comment (if any) of the
+    /// indicator it matched. One entry for a single list, several for run-all.
+    Ioc(Vec<(String, Vec<(usize, Option<String>)>)>),
     Cancelled,
 }
 
@@ -418,6 +419,9 @@ impl TlxApp {
         self.editing = Editing::None;
         self.annot_cols = true;
         self.adopted = AdoptedColumns::none();
+        // Load this timeline/case's IOC lists so the sidebar shows them
+        // immediately, without waiting for the manager to be opened.
+        self.reload_ioc_lists();
     }
 
     /// Rebuilds `self.rows` from the current filter + sort via a one-shot View.
@@ -1356,7 +1360,7 @@ impl eframe::App for TlxApp {
 
         egui::Panel::top("toolbar").show_inside(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Open CSV\u{2026}").clicked() {
+                if ui.button("Open Timeline\u{2026}").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("CSV/TSV", &["csv", "tsv", "txt"])
                         .pick_file()
@@ -1493,10 +1497,8 @@ impl eframe::App for TlxApp {
                 egui::CollapsingHeader::new("Saved views").default_open(true).show(ui, |ui| {
                     self.saved_views_section(ui);
                 });
-                egui::CollapsingHeader::new("IOC lists").show(ui, |ui| {
-                    if ui.button("Manage IOC lists\u{2026}").clicked() {
-                        self.open_ioc_manager();
-                    }
+                egui::CollapsingHeader::new("IOC lists").default_open(true).show(ui, |ui| {
+                    self.ioc_sidebar(ui);
                 });
             });
         }
@@ -1623,8 +1625,8 @@ impl TlxApp {
         let col_title = |refc: ColumnRef| -> String {
             match refc {
                 COL_ROW_NUM => "#".to_string(),
-                COL_TAGS => "\u{270E} Tags".to_string(),
-                COL_COMMENT => "\u{270E} Comment".to_string(),
+                COL_TAGS => "\u{270F} Tags".to_string(),
+                COL_COMMENT => "\u{270F} Comment".to_string(),
                 c => col_names
                     .get(c as usize)
                     .filter(|n| !n.is_empty())
@@ -2577,14 +2579,14 @@ impl TlxApp {
         if !self.master_mode {
             ui.horizontal(|ui| {
                 ui.strong("Tags:");
-                if ui.add_enabled(!read_only, egui::Button::new("\u{270E} Edit")).clicked() {
+                if ui.add_enabled(!read_only, egui::Button::new("\u{270F} Edit")).clicked() {
                     open_tag_master = Some(master);
                 }
             });
             Self::details_field_row(ui, usize::MAX - 1, "", &tags, notes_on, &mut note_add, &mut sel_store);
             ui.horizontal(|ui| {
                 ui.strong("Comment:");
-                if ui.add_enabled(!read_only, egui::Button::new("\u{270E} Edit")).clicked() {
+                if ui.add_enabled(!read_only, egui::Button::new("\u{270F} Edit")).clicked() {
                     open_comment_master = Some(master);
                 }
             });
@@ -2951,6 +2953,75 @@ impl TlxApp {
         self.apply_filter();
     }
 
+    /// Left-sidebar IOC lists section: each list with a run button, an edit
+    /// button that opens the manager focused on it, and a delete button, plus
+    /// New and Run all at the bottom. Actions are collected first so the
+    /// per-list buttons can borrow `self.ioc_lists` immutably in the loop.
+    fn ioc_sidebar(&mut self, ui: &mut egui::Ui) {
+        if self.path.is_empty() && self.case.is_none() {
+            ui.weak("Open a timeline or case first.");
+            return;
+        }
+
+        enum IocAction {
+            Run(usize),
+            Edit(usize),
+            Delete(usize),
+            New,
+            RunAll,
+        }
+        let mut action: Option<IocAction> = None;
+
+        if self.ioc_lists.is_empty() {
+            ui.weak("No IOC lists yet.");
+        }
+        for (i, l) in self.ioc_lists.iter().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.small_button("\u{25B6}").on_hover_text("Run this list").clicked() {
+                    action = Some(IocAction::Run(i));
+                }
+                if ui.small_button("\u{270F}").on_hover_text("Edit in the IOC manager").clicked() {
+                    action = Some(IocAction::Edit(i));
+                }
+                if ui.small_button("\u{1F5D1}").on_hover_text("Delete this list").clicked() {
+                    action = Some(IocAction::Delete(i));
+                }
+                ui.label(&l.name);
+            });
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui.button("New").clicked() {
+                action = Some(IocAction::New);
+            }
+            if !self.ioc_lists.is_empty() && ui.button("Run all").clicked() {
+                action = Some(IocAction::RunAll);
+            }
+        });
+
+        match action {
+            Some(IocAction::Run(i)) => {
+                if let Some(l) = self.ioc_lists.get(i) {
+                    let lists = vec![(l.name.clone(), l.body.clone())];
+                    self.spawn_ioc(lists, JobKind::Ioc);
+                }
+            }
+            Some(IocAction::Edit(i)) => self.open_ioc_manager_at(i),
+            Some(IocAction::Delete(i)) => {
+                self.ioc_sel = Some(i);
+                self.ioc_delete_selected();
+            }
+            Some(IocAction::New) => {
+                // open_ioc_manager seeds ioc_sel/name/body, then create a fresh
+                // list in the manager.
+                self.open_ioc_manager();
+                self.ioc_create_list();
+            }
+            Some(IocAction::RunAll) => self.run_all_iocs(),
+            None => {}
+        }
+    }
+
     fn open_ioc_manager(&mut self) {
         if self.path.is_empty() && self.case.is_none() {
             self.status = "Open a file or case first.".to_string();
@@ -2963,6 +3034,17 @@ impl TlxApp {
             self.ioc_body = l.body.clone();
         }
         self.show_ioc = true;
+    }
+
+    /// Open the IOC manager focused on list `i` (from the sidebar's Edit
+    /// button).
+    fn open_ioc_manager_at(&mut self, i: usize) {
+        self.open_ioc_manager();
+        if i < self.ioc_lists.len() {
+            self.ioc_sel = Some(i);
+            self.ioc_name = self.ioc_lists[i].name.clone();
+            self.ioc_body = self.ioc_lists[i].body.clone();
+        }
     }
 
     /// Load the IOC lists from wherever they live: the case DB inside a case,
@@ -2997,63 +3079,90 @@ impl TlxApp {
         let mut run = false;
         let mut run_all = false;
 
-        egui::Window::new("IOC lists")
-            .collapsible(false)
-            .resizable(true)
-            .default_size([560.0, 360.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.horizontal_top(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(170.0);
-                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                            for (i, l) in self.ioc_lists.iter().enumerate() {
-                                if ui
-                                    .selectable_label(self.ioc_sel == Some(i), &l.name)
-                                    .clicked()
-                                {
-                                    select = Some(i);
-                                }
+        // A real OS window (viewport), not an in-app egui::Window, so it can be
+        // dragged outside the main window and onto another monitor. Same pattern
+        // as the cell pop-out and candidate-review windows.
+        let vp_id = egui::ViewportId::from_hash_of("ioc-manager");
+        let builder = egui::ViewportBuilder::default()
+            .with_title("IOC lists")
+            .with_inner_size([560.0, 360.0]);
+        ctx.show_viewport_immediate(vp_id, builder, |ui, _class| {
+            let vctx = ui.ctx().clone();
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(170.0);
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        for (i, l) in self.ioc_lists.iter().enumerate() {
+                            if ui
+                                .selectable_label(self.ioc_sel == Some(i), &l.name)
+                                .clicked()
+                            {
+                                select = Some(i);
                             }
-                        });
-                        ui.horizontal(|ui| {
-                            if ui.button("New").clicked() {
-                                create = true;
-                            }
-                            if ui.button("Run all").clicked() {
-                                run_all = true;
-                            }
-                        });
+                        }
                     });
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        if self.ioc_sel.is_some() {
-                            ui.add(egui::TextEdit::singleline(&mut self.ioc_name).hint_text("List name").desired_width(f32::INFINITY));
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.ioc_body)
-                                    .hint_text("One indicator per line: plain substring, /regex/, or `Field=value query`")
-                                    .desired_rows(12)
-                                    .desired_width(f32::INFINITY)
-                                    .font(egui::TextStyle::Monospace),
-                            );
-                            ui.horizontal(|ui| {
-                                if ui.button("Delete").clicked() {
-                                    delete = true;
-                                }
-                                if ui.button("Save").clicked() {
-                                    save = true;
-                                }
-                                if ui.button("Save & run").clicked() {
-                                    save = true;
-                                    run = true;
-                                }
-                            });
-                        } else {
-                            ui.weak("Select or create a list.");
+                    ui.horizontal(|ui| {
+                        if ui.button("New").clicked() {
+                            create = true;
+                        }
+                        if ui.button("Run all").clicked() {
+                            run_all = true;
                         }
                     });
                 });
+                ui.separator();
+                ui.vertical(|ui| {
+                    if self.ioc_sel.is_some() {
+                        ui.add(egui::TextEdit::singleline(&mut self.ioc_name).hint_text("List name").desired_width(f32::INFINITY));
+                        // Lift the text box off the window background: its default
+                        // fill (extreme_bg_color) is near-black in dark mode and
+                        // sits on an equally dark window, so the box is invisible.
+                        // A lighter fill plus a visible border gives it an edge.
+                        let dark = ui.visuals().dark_mode;
+                        let box_fill = if dark {
+                            egui::Color32::from_gray(32)
+                        } else {
+                            egui::Color32::from_gray(250)
+                        };
+                        let box_stroke = egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.fg_stroke.color);
+                        // Fill the window: give the box all the remaining height
+                        // bar a slice reserved for the button row below, so it
+                        // grows and shrinks as the window is resized.
+                        let reserved = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0;
+                        let box_height = (ui.available_height() - reserved).max(80.0);
+                        egui::Frame::new().fill(box_fill).stroke(box_stroke).inner_margin(2.0).show(ui, |ui| {
+                            ui.visuals_mut().extreme_bg_color = box_fill;
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                ui.add_sized(
+                                    [ui.available_width(), box_height],
+                                    egui::TextEdit::multiline(&mut self.ioc_body)
+                                        .hint_text("One indicator per line: plain substring, /regex/, or `Field=value query`. A ## line labels the block below it (until a blank line); its text is stamped onto rows those indicators hit")
+                                        .desired_width(f32::INFINITY)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Delete").clicked() {
+                                delete = true;
+                            }
+                            if ui.button("Save").clicked() {
+                                save = true;
+                            }
+                            if ui.button("Save & run").clicked() {
+                                save = true;
+                                run = true;
+                            }
+                        });
+                    } else {
+                        ui.weak("Select or create a list.");
+                    }
+                });
             });
+            if vctx.input(|i| i.viewport().close_requested()) {
+                open = false;
+            }
+        });
 
         if let Some(i) = select {
             // Persist the current edit before switching away.
@@ -3256,10 +3365,10 @@ impl TlxApp {
                     return;
                 }
                 match crate::engine::scan::parallel_ioc(&idx, &snap, body, false, annot, &p2, &c2) {
-                    crate::engine::scan::ScanOutcome::Done(hits) => {
+                    crate::engine::scan::IocOutcome::Done(hits) => {
                         results.push((format!("ioc:{name}"), hits))
                     }
-                    crate::engine::scan::ScanOutcome::Cancelled => {
+                    crate::engine::scan::IocOutcome::Cancelled => {
                         let _ = tx.send(JobResult::Cancelled);
                         return;
                     }
@@ -3281,7 +3390,11 @@ impl TlxApp {
     /// Tag the rows each IOC list matched, then refresh the view. A read-only
     /// session is temporarily bumped so the tags can be written, matching the
     /// Go behaviour. Each list's tag "ioc:<name>" is fixed purple.
-    fn apply_ioc_hits(&mut self, lists: Vec<(String, Vec<usize>)>, elapsed: std::time::Duration) {
+    fn apply_ioc_hits(
+        &mut self,
+        lists: Vec<(String, Vec<(usize, Option<String>)>)>,
+        elapsed: std::time::Duration,
+    ) {
         let prev_mode = self.session.mode();
         if prev_mode == Mode::ReadOnly {
             self.session.set_mode(Mode::Investigator);
@@ -3289,9 +3402,25 @@ impl TlxApp {
         let mut total = 0usize;
         for (tag, hits) in &lists {
             let _ = self.session.define_tag(tag, "#8E24AA");
-            for master in hits {
+            for (master, note) in hits {
                 if self.session.add_tag(*master, tag).is_ok() {
                     total += 1;
+                }
+                // A ## comment on the matching indicator is merged into the
+                // row's comment: set when blank, left alone when it already
+                // contains the text, else prepended.
+                if let Some(note) = note {
+                    let cur = self.session.comment(*master);
+                    let merged = if cur.is_empty() {
+                        Some(note.clone())
+                    } else if cur.contains(note.as_str()) {
+                        None
+                    } else {
+                        Some(format!("{note}; {cur}"))
+                    };
+                    if let Some(merged) = merged {
+                        let _ = self.session.set_comment(*master, &merged);
+                    }
                 }
             }
         }
