@@ -1,3 +1,9 @@
+> **This code is the purest of AI slop.** Every line was written by an AI
+> assistant. None of it has been hand-written, and none of it has been read,
+> reviewed or audited by a person. Read the code yourself before you trust it
+> with anything, and don't assume it's correct or safe because it compiles and
+> runs.
+
 # Timeline explorer
 
 ## Read this first: what this is for
@@ -17,12 +23,6 @@ That is not "don't use it". Use it to practise, to teach, to run a workshop, to
 get a feel for the workflow before you sit in front of accredited tools. Just
 don't mistake it for one of them, and don't put it on the critical path of a
 real case.
-
-> **This code is entirely AI-generated.** Every line was written by an AI
-> assistant. None of it has been hand-written, and none of it has been read,
-> reviewed or audited by a person. Read the code yourself before you trust it
-> with anything, and don't assume it's correct or safe because it compiles and
-> runs.
 
 A native desktop viewer and annotator for large forensic CSV timelines — the
 kind Eric Zimmerman's tools emit (`Alert, Tag, Timestamp, Field, Summary` and
