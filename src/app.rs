@@ -73,6 +73,10 @@ pub struct TlxApp {
     // Clicking a Comment cell opens an editable box in place rather than the
     // pop-out window.
     inline_comment: Option<(usize, String)>,
+    // One-shot: focus the inline Comment box on the first frame after it opens.
+    // Focusing every frame would stop it ever losing focus, so a click-away
+    // could never commit.
+    inline_comment_focus: bool,
 
     // Artifact candidates already added from the currently-open cell context
     // menu: (cell master, column, added texts). The menu stays open on an Add
@@ -117,6 +121,11 @@ pub struct TlxApp {
     // new-note input buffers for the dock
     new_artifact: String,
     new_time: String,
+    // inline edit of an existing note: (kind, id) being edited, and its buffer.
+    editing_note: Option<(NoteKind, i64)>,
+    editing_note_buf: String,
+    // one-shot: focus the edit field on the first frame after an edit begins.
+    editing_note_focus: bool,
 
     // save-current-view input
     new_view_name: String,
@@ -394,6 +403,7 @@ impl Default for TlxApp {
             col_filter_comment: String::new(),
             details_sel: None,
             inline_comment: None,
+            inline_comment_focus: false,
             tagged_only: false,
             cased: false,
             tag_checklist: BTreeSet::new(),
@@ -415,6 +425,9 @@ impl Default for TlxApp {
             path: String::new(),
             new_artifact: String::new(),
             new_time: String::new(),
+            editing_note: None,
+            editing_note_buf: String::new(),
+            editing_note_focus: false,
             new_view_name: String::new(),
             show_ioc: false,
             ioc_lists: Vec::new(),
@@ -1539,10 +1552,10 @@ impl TlxApp {
             self.status = "Open or create a case first.".to_string();
             return;
         }
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("CSV/TSV", &["csv", "tsv", "txt"])
-            .pick_file()
-        else {
+        // No format filter: a timeline may be any delimited text file
+        // (.csv, .tsv, .txt, .timeline, no extension...), so the open dialog
+        // must let any file through rather than grey non-CSV names out.
+        let Some(path) = rfd::FileDialog::new().pick_file() else {
             return;
         };
         let db_path = self.case.as_ref().unwrap().path().to_string();
@@ -1785,7 +1798,7 @@ impl TlxApp {
                     .unwrap_or(false)
                     && !self.master_mode;
                 let label = if current {
-                    format!("\u{25CF} {}", tl.name)
+                    format!("\u{2022} {}", tl.name)
                 } else {
                     tl.name.clone()
                 };
@@ -1843,7 +1856,7 @@ impl TlxApp {
                 egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
                     for (i, h) in headers.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            ui.label(format!("{h} \u{2192}"));
+                            ui.label(format!("{h} \u{27A1}"));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.rename_cols_buf[i])
                                     .desired_width(220.0),
@@ -1912,10 +1925,10 @@ impl eframe::App for TlxApp {
         egui::Panel::top("toolbar").show_inside(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Open Timeline\u{2026}").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("CSV/TSV", &["csv", "tsv", "txt"])
-                        .pick_file()
-                    {
+                    // No format filter: see add_timeline_to_case. A timeline
+                    // can be any delimited text file, so don't grey out
+                    // non-CSV names in the open dialog.
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
                         self.open_path(&path.display().to_string());
                     }
                 }
@@ -2116,6 +2129,18 @@ impl eframe::App for TlxApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.grid(ui);
         });
+
+        // Standalone files autosave their sidecar the moment an annotation
+        // changes (tags, comments, cell edits), the same way IOC lists persist
+        // immediately. Done after the frame's UI so a change made this frame is
+        // flushed this frame. Inside a case, annotations go to the case DB via
+        // autosave_case on timeline switch, so the sidecar is left alone.
+        let standalone = !self.master_mode && !(self.case.is_some() && self.cur_timeline.is_some());
+        if standalone && self.session.dirty() {
+            if let Err(e) = self.session.save() {
+                self.status = format!("Autosave failed: {e}");
+            }
+        }
     }
 }
 
@@ -2143,6 +2168,7 @@ impl TlxApp {
             master_mode,
             adopted,
             inline_comment,
+            inline_comment_focus,
             menu_added,
             ..
         } = self;
@@ -2197,24 +2223,6 @@ impl TlxApp {
 
         use egui_extras::{Column, TableBuilder};
 
-        let mut builder = TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .sense(egui::Sense::click())
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
-        for &refc in &columns {
-            let col = match refc {
-                COL_ROW_NUM => Column::initial(64.0).at_least(40.0).clip(true),
-                COL_TAGS => Column::initial(150.0).at_least(60.0).clip(true),
-                COL_COMMENT => Column::initial(220.0).at_least(60.0).clip(true),
-                _ => Column::auto().at_least(60.0).clip(true),
-            };
-            builder = builder.column(col);
-        }
-        if let Some(p) = want_scroll_to.take() {
-            builder = builder.scroll_to_row(p, Some(egui::Align::Center));
-        }
-
         let header_h = if show_filter_row { 48.0 } else { 24.0 };
         let mut clicked_col: Option<ColumnRef> = None;
         let mut col_filter_changed = false;
@@ -2251,13 +2259,43 @@ impl TlxApp {
         // Open the full candidate-review window: (cell text, all candidates).
         let mut open_review: Option<(String, Vec<crate::engine::extract::Candidate>)> = None;
 
+        // egui_extras' Table scrolls only vertically (it hard-codes the
+        // horizontal axis off). Wrap it in a horizontal ScrollArea so a wide
+        // timeline can pan side to side; the table keeps its own vertical
+        // scroll (and row virtualisation, which matters for multi-million-row
+        // files). auto_shrink is off so the area fills the panel. The table's
+        // vertical scrollbar rides the right edge of the column block rather
+        // than the viewport, which is the price of horizontal panning here.
+        egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+        let mut builder = TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .sense(egui::Sense::click())
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+        for &refc in &columns {
+            let col = match refc {
+                COL_ROW_NUM => Column::initial(64.0).at_least(40.0).clip(true),
+                COL_TAGS => Column::initial(150.0).at_least(60.0).clip(true),
+                COL_COMMENT => Column::initial(220.0).at_least(60.0).clip(true),
+                // A fixed, resizable initial rather than Column::auto(): a
+                // single very wide cell (plaso 'message' can be thousands of
+                // chars) makes an auto column measure an enormous width, which
+                // both swamps the viewport and drives egui_extras' column
+                // sizing to a NaN width that panics ("Negative width ... NaN").
+                _ => Column::initial(240.0).at_least(60.0).clip(true),
+            };
+            builder = builder.column(col);
+        }
+        if let Some(p) = want_scroll_to.take() {
+            builder = builder.scroll_to_row(p, Some(egui::Align::Center));
+        }
         builder
             .header(header_h, |mut header| {
                 for &refc in &columns {
                     header.col(|ui| {
                         ui.vertical(|ui| {
                             let marker = if sort_col == Some(refc) {
-                                if sort_desc { " \u{25BC}" } else { " \u{25B2}" }
+                                if sort_desc { " \u{2B07}" } else { " \u{2B06}" }
                             } else {
                                 ""
                             };
@@ -2378,9 +2416,29 @@ impl TlxApp {
                                         egui::TextEdit::singleline(buf)
                                             .desired_width(f32::INFINITY),
                                     );
-                                    r.request_focus();
+                                    let just_focused = *inline_comment_focus;
+                                    if *inline_comment_focus {
+                                        r.request_focus();
+                                        *inline_comment_focus = false;
+                                    }
+                                    // A press anywhere outside the box commits the
+                                    // edit. lost_focus() alone is unreliable here:
+                                    // in a virtualised egui_extras table the
+                                    // TextEdit's auto id can shift between frames,
+                                    // so it may never hold keyboard focus to lose
+                                    // (Enter still works - that key check is
+                                    // global). Skip the frame we grab focus, when
+                                    // the opening click may still read as pressed.
+                                    let press_outside = !just_focused
+                                        && ui.ctx().input(|i| {
+                                            i.pointer.any_pressed()
+                                                && i.pointer
+                                                    .interact_pos()
+                                                    .is_some_and(|p| !r.rect.contains(p))
+                                        });
                                     if r.lost_focus()
                                         || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        || press_outside
                                     {
                                         commit_inline_comment = true;
                                     }
@@ -2444,13 +2502,14 @@ impl TlxApp {
                             Some(h) => cell_resp0.union(h),
                             None => cell_resp0,
                         };
-                        // Clicking the Tags cell opens its editor; the Comment
-                        // cell opens an inline editable box; a data cell selects
-                        // the row (the overlay consumes the click, so row-level
-                        // selection won't fire for it). Double-click pops out.
+                        // Clicking the Comment cell opens an inline editable
+                        // box; the Tags cell and data cells select the row (the
+                        // overlay consumes the click, so row-level selection
+                        // won't fire for it). Tags are edited from the cell's
+                        // right-click menu or the Tags sidebar, not a left
+                        // click. Double-click pops out.
                         if cell_resp.clicked() {
                             match refc {
-                                COL_TAGS => open_tag = Some(master),
                                 COL_COMMENT => {
                                     open_inline_comment = Some(master);
                                 }
@@ -2522,7 +2581,7 @@ impl TlxApp {
                                     for c in cands.iter().take(MENU_MAX) {
                                         if added_set.contains(&c.text) {
                                             ui.horizontal(|ui| {
-                                                ui.weak("\u{2713}");
+                                                ui.weak("\u{2714}");
                                                 ui.weak(&c.text);
                                             });
                                             continue;
@@ -2617,6 +2676,7 @@ impl TlxApp {
                     }
                 });
             });
+        });
 
         for (pos, mods) in row_clicks {
             self.on_row_click(pos, mods);
@@ -2640,25 +2700,31 @@ impl TlxApp {
                 self.session.comment(master)
             };
         }
+        // Commit the inline comment edit (Enter, or a press outside the box).
+        // Write only when the text actually changed. Bump ReadOnly->Investigator
+        // for the write, then restore, same as elsewhere. Runs before the open
+        // handler below so clicking straight from one Comment cell to another
+        // commits the first edit instead of discarding it.
+        if commit_inline_comment {
+            if let Some((master, text)) = self.inline_comment.take() {
+                if self.session.comment(master) != text {
+                    let prev = self.session.mode();
+                    if prev == Mode::ReadOnly {
+                        self.session.set_mode(Mode::Investigator);
+                    }
+                    let _ = self.session.set_comment(master, &text);
+                    if prev == Mode::ReadOnly {
+                        self.session.set_mode(prev);
+                    }
+                }
+            }
+        }
         // Start inline comment editing: load the current comment into the buffer
         // the Comment cell renders as a TextEdit next frame.
         if let Some(master) = open_inline_comment {
             let cur = self.session.comment(master);
             self.inline_comment = Some((master, cur));
-        }
-        // Commit the inline comment edit (Enter or focus lost). Bump
-        // ReadOnly->Investigator for the write, then restore, same as elsewhere.
-        if commit_inline_comment {
-            if let Some((master, text)) = self.inline_comment.take() {
-                let prev = self.session.mode();
-                if prev == Mode::ReadOnly {
-                    self.session.set_mode(Mode::Investigator);
-                }
-                let _ = self.session.set_comment(master, &text);
-                if prev == Mode::ReadOnly {
-                    self.session.set_mode(prev);
-                }
-            }
+            self.inline_comment_focus = true;
         }
         // Inline tag toggle from the context menu: add/remove across the
         // selection (or the single clicked row). Bump ReadOnly->Investigator so
@@ -3028,7 +3094,7 @@ impl TlxApp {
                 for (i, c) in cands.iter().enumerate() {
                     ui.horizontal(|ui| {
                         if added[i] {
-                            ui.weak("\u{2713}");
+                            ui.weak("\u{2714}");
                             ui.weak(&c.text);
                         } else {
                             if ui.button("Add").clicked() {
@@ -4047,6 +4113,16 @@ impl TlxApp {
         self.prefs.delete_note(&self.path, kind, id);
     }
 
+    fn note_set_text(&mut self, kind: NoteKind, id: i64, text: &str) {
+        if let Some(case) = self.case.as_mut() {
+            if self.cur_timeline.is_some() {
+                let _ = case.set_note_text(id, text);
+                return;
+            }
+        }
+        self.prefs.set_note_text(&self.path, kind, id, text);
+    }
+
     /// Investigator's notes dock (G13): Artifacts and Times lists with a done
     /// checkbox (strike-through), filter-to-entry, and delete. Backed by the
     /// case DB inside a case, else the standalone prefs store.
@@ -4055,8 +4131,12 @@ impl TlxApp {
             Toggle(NoteKind, i64, bool),
             Delete(NoteKind, i64),
             FilterTo(String),
+            BeginEdit(NoteKind, i64, String),
+            CommitEdit(NoteKind, i64),
+            CancelEdit,
         }
         let mut action: Option<NoteAction> = None;
+        let editing = self.editing_note;
 
         for (kind, label, buf_is_artifact) in [
             (NoteKind::Artifact, "Artifacts", true),
@@ -4066,6 +4146,25 @@ impl TlxApp {
             let notes = self.note_list(kind);
             for (id, text, done) in &notes {
                 ui.horizontal(|ui| {
+                    if editing == Some((kind, *id)) {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.editing_note_buf).desired_width(180.0),
+                        );
+                        if self.editing_note_focus {
+                            resp.request_focus();
+                            self.editing_note_focus = false;
+                        }
+                        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if ui.small_button("\u{2714}").on_hover_text("Save").clicked() || enter {
+                            action = Some(NoteAction::CommitEdit(kind, *id));
+                        }
+                        if ui.small_button("\u{00D7}").on_hover_text("Cancel").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                        {
+                            action = Some(NoteAction::CancelEdit);
+                        }
+                        return;
+                    }
                     let mut d = *done;
                     if ui.checkbox(&mut d, "").changed() {
                         action = Some(NoteAction::Toggle(kind, *id, d));
@@ -4076,7 +4175,10 @@ impl TlxApp {
                         egui::RichText::new(text)
                     };
                     ui.add(egui::Label::new(rt).truncate());
-                    if ui.small_button("\u{2315}").on_hover_text("Filter to this entry").clicked() {
+                    if ui.small_button("\u{270F}").on_hover_text("Edit").clicked() {
+                        action = Some(NoteAction::BeginEdit(kind, *id, text.clone()));
+                    }
+                    if ui.small_button("\u{1F50D}").on_hover_text("Filter to this entry").clicked() {
                         action = Some(NoteAction::FilterTo(text.clone()));
                     }
                     if ui.small_button("\u{00D7}").on_hover_text("Delete").clicked() {
@@ -4107,6 +4209,23 @@ impl TlxApp {
         match action {
             Some(NoteAction::Toggle(k, id, done)) => self.note_set_done(k, id, done),
             Some(NoteAction::Delete(k, id)) => self.note_delete(k, id),
+            Some(NoteAction::BeginEdit(k, id, text)) => {
+                self.editing_note = Some((k, id));
+                self.editing_note_buf = text;
+                self.editing_note_focus = true;
+            }
+            Some(NoteAction::CommitEdit(k, id)) => {
+                let text = self.editing_note_buf.trim().to_string();
+                if !text.is_empty() {
+                    self.note_set_text(k, id, &text);
+                }
+                self.editing_note = None;
+                self.editing_note_buf.clear();
+            }
+            Some(NoteAction::CancelEdit) => {
+                self.editing_note = None;
+                self.editing_note_buf.clear();
+            }
             Some(NoteAction::FilterTo(text)) => {
                 // Quote the entry as a plain free-text match (wrap in quotes so
                 // special characters stay literal) and apply. Escape backslash
@@ -4273,7 +4392,7 @@ impl TlxApp {
                                 ui.painter().rect_filled(rect, 2.0, c);
                                 let _ = resp;
                             } else {
-                                ui.label("\u{2300}"); // no-highlight sentinel
+                                ui.label("\u{25CB}"); // no-highlight sentinel
                             }
                             let mut on = all_have(&d.name);
                             if ui.checkbox(&mut on, &d.name).changed() {

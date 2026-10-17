@@ -745,6 +745,17 @@ CREATE TABLE IF NOT EXISTS tagged_snapshot (
         Ok(())
     }
 
+    /// set_note_text replaces a note's text. text is trimmed; empty-after-trim
+    /// is an error, so an edit cannot blank a note out (delete it instead).
+    pub fn set_note_text(&mut self, id: i64, text: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(other("note text is required"));
+        }
+        self.conn.execute("UPDATE notes SET text=?1 WHERE id=?2", params![text, id])?;
+        Ok(())
+    }
+
     /// delete_note removes a note by id.
     pub fn delete_note(&mut self, id: i64) -> Result<()> {
         self.conn.execute("DELETE FROM notes WHERE id=?1", params![id])?;

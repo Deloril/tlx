@@ -198,6 +198,23 @@ impl Prefs {
         }
     }
 
+    pub fn set_note_text(&mut self, path: &str, kind: NoteKind, id: i64, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if let Some(ns) = self.data.notes.get_mut(path) {
+            let list = match kind {
+                NoteKind::Artifact => &mut ns.artifacts,
+                NoteKind::Time => &mut ns.times,
+            };
+            if let Some(n) = list.iter_mut().find(|n| n.id == id) {
+                n.text = text.to_string();
+                self.save();
+            }
+        }
+    }
+
     pub fn delete_note(&mut self, path: &str, kind: NoteKind, id: i64) {
         if let Some(ns) = self.data.notes.get_mut(path) {
             let list = match kind {
