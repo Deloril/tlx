@@ -23,6 +23,9 @@ pub struct PrefsData {
     pub timeline_comments: HashMap<String, String>,
     #[serde(default)]
     pub ioc_lists: HashMap<String, Vec<StoredIoc>>,
+    /// "To Timeline" export layouts, keyed by source file path.
+    #[serde(default)]
+    pub export_layouts: HashMap<String, StoredExportLayout>,
     /// Dark theme on/off. Defaults to dark (true) to match the Fyne app's
     /// startup variant; see dark_theme().
     #[serde(default = "default_true")]
@@ -56,6 +59,37 @@ pub struct StoredIoc {
     pub name: String,
     #[serde(default)]
     pub body: String,
+}
+
+/// A persisted "To Timeline" export layout: the output columns, their source
+/// mappings and the tagged/commented-only flag. Stored per source file
+/// (standalone) or in the case DB's meta table (case mode), so the mapping is
+/// restored on reopen rather than rebuilt from scratch.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct StoredExportLayout {
+    #[serde(default)]
+    pub tagged_only: bool,
+    #[serde(default)]
+    pub columns: Vec<StoredExportCol>,
+}
+
+/// One output column of a stored export layout.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct StoredExportCol {
+    pub name: String,
+    #[serde(default)]
+    pub sources: Vec<StoredSource>,
+}
+
+/// A source feeding a stored export column. `kind` is "data" (resolve `name`
+/// against the timeline's current headers), "tags", or "comment"; storing data
+/// columns by name lets a layout re-apply to a timeline with a different
+/// column order.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct StoredSource {
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 /// SavedView is an application-level saved filter+sort. The sort column is
@@ -207,6 +241,17 @@ impl Prefs {
 
     pub fn set_ioc_lists(&mut self, path: &str, lists: Vec<StoredIoc>) {
         self.data.ioc_lists.insert(path.to_string(), lists);
+        self.save();
+    }
+
+    // --- export layout -------------------------------------------------------
+
+    pub fn export_layout(&self, path: &str) -> Option<StoredExportLayout> {
+        self.data.export_layouts.get(path).cloned()
+    }
+
+    pub fn set_export_layout(&mut self, path: &str, layout: StoredExportLayout) {
+        self.data.export_layouts.insert(path.to_string(), layout);
         self.save();
     }
 

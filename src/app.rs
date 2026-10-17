@@ -18,7 +18,9 @@ use crate::engine::session::Mode;
 use crate::engine::view::Overlay;
 use crate::engine::view::{COL_COMMENT, COL_ROW_NUM, COL_TAGS};
 use crate::engine::{timecol, ColumnRef, FilterSpec, Index, Session, SortKey, View, COL_ALL};
-use crate::prefs::{NoteKind, Prefs, SavedView, StoredIoc};
+use crate::prefs::{
+    NoteKind, Prefs, SavedView, StoredExportCol, StoredExportLayout, StoredIoc, StoredSource,
+};
 
 /// Which per-row annotation action the small editor popup is performing.
 #[derive(PartialEq)]
@@ -167,6 +169,9 @@ pub struct TlxApp {
     // `job` is Some while a scan runs; the UI shows a progress bar + Cancel and
     // polls `job.rx` each frame. Small files skip this and run synchronously.
     job: Option<ScanJob>,
+
+    // "To Timeline" export builder. Some while the builder dialog is open.
+    timeline_export: Option<TimelineExport>,
 }
 
 /// A running background scan (filter or IOC). The worker thread owns an
@@ -188,6 +193,7 @@ enum JobKind {
     FilterClear,
     Ioc,
     IocAll,
+    Export,
 }
 
 /// What a worker sends back when its scan finishes (or is cancelled).
@@ -198,7 +204,27 @@ enum JobResult {
     /// master rows that hit, each paired with the ## comment (if any) of the
     /// indicator it matched. One entry for a single list, several for run-all.
     Ioc(Vec<(String, Vec<(usize, Option<String>)>)>),
+    /// Export finished: (rows written, destination path), or an error message.
+    Export(Result<(usize, String), String>),
     Cancelled,
+}
+
+/// What to write in a background export. Both flavours run over the already
+/// computed current view (self.rows: filter + sort applied); the worker only
+/// reads rows and writes them, never re-scans.
+enum ExportSpec {
+    /// Plain "Current view" export: source columns (minus `omit`) plus the
+    /// appended Tags/Comment columns, with an optional timeline-comment prelude.
+    Current {
+        omit: std::collections::HashSet<usize>,
+        comment: String,
+    },
+    /// "To Timeline" export: a custom column layout.
+    Timeline {
+        cols: Vec<crate::engine::export::TimelineCol>,
+        comment: String,
+        tagged_only: bool,
+    },
 }
 
 /// The four floatable right-dock panels (R6), matching the Fyne dock. Ordered
@@ -269,6 +295,81 @@ struct CandidateReview {
     open: bool,
 }
 
+/// A source timeline column available to the "To Timeline" export builder: a
+/// column reference (a data-column index, or COL_TAGS / COL_COMMENT) and the
+/// label shown in the palette and used as the "<name>: " prefix when a column
+/// is fed by two or more sources.
+#[derive(Clone)]
+struct SourceCol {
+    col: ColumnRef,
+    name: String,
+}
+
+/// One output column of the "To Timeline" export: a renameable name and the
+/// ordered source columns dropped into it.
+struct ExportCol {
+    name: String,
+    sources: Vec<SourceCol>,
+}
+
+/// Open-dialog state for the "To Timeline" export builder.
+struct TimelineExport {
+    cols: Vec<ExportCol>,
+    /// Source columns not yet assigned to any output column.
+    unassigned: Vec<SourceCol>,
+    new_col_name: String,
+    /// Only export rows whose Tags or Comment is non-empty.
+    tagged_only: bool,
+}
+
+/// Where a dragged source column is being dropped.
+#[derive(Clone, Copy)]
+enum DropDest {
+    Unassigned,
+    Col(usize),
+}
+
+/// Drag-and-drop payload: the ColumnRef of the source being dragged. Any
+/// source lives in exactly one bucket (the palette or one output column), so
+/// its ColumnRef identifies it uniquely.
+#[derive(Clone)]
+struct DragCol(ColumnRef);
+
+/// Drag-and-drop payload for reordering output columns: the index of the
+/// column being dragged. A distinct type from DragCol so the source-chip and
+/// column-reorder drag interactions never pick up each other's payloads.
+#[derive(Clone)]
+struct DragColIdx(usize);
+
+impl TimelineExport {
+    /// Pull the source with the given ColumnRef out of whichever bucket holds
+    /// it (palette or any output column).
+    fn remove_col(&mut self, col: ColumnRef) -> Option<SourceCol> {
+        if let Some(p) = self.unassigned.iter().position(|s| s.col == col) {
+            return Some(self.unassigned.remove(p));
+        }
+        for ec in &mut self.cols {
+            if let Some(p) = ec.sources.iter().position(|s| s.col == col) {
+                return Some(ec.sources.remove(p));
+            }
+        }
+        None
+    }
+
+    /// Move a source to a destination bucket (a no-op if it isn't found or the
+    /// target column has gone).
+    fn move_to(&mut self, col: ColumnRef, dest: DropDest) {
+        let Some(sc) = self.remove_col(col) else { return };
+        match dest {
+            DropDest::Unassigned => self.unassigned.push(sc),
+            DropDest::Col(i) => match self.cols.get_mut(i) {
+                Some(ec) => ec.sources.push(sc),
+                None => self.unassigned.push(sc),
+            },
+        }
+    }
+}
+
 impl Default for TlxApp {
     fn default() -> Self {
         let prefs = Prefs::load();
@@ -337,6 +438,7 @@ impl Default for TlxApp {
             annot_cols: true,
             adopted: AdoptedColumns::none(),
             job: None,
+            timeline_export: None,
         }
     }
 }
@@ -605,6 +707,12 @@ impl TlxApp {
                     JobResult::Ioc(lists) => {
                         self.apply_ioc_hits(lists, elapsed);
                     }
+                    JobResult::Export(Ok((n, dest))) => {
+                        self.status = format!("Exported {n} rows to {dest} in {:.0?}", elapsed);
+                    }
+                    JobResult::Export(Err(e)) => {
+                        self.status = format!("Export failed: {e}");
+                    }
                     JobResult::Cancelled => {
                         self.status = "Cancelled.".to_string();
                     }
@@ -700,18 +808,6 @@ impl TlxApp {
             return;
         };
         let dest = dest.display().to_string();
-        let idx = self.idx.as_ref().unwrap();
-        let mut view = View::new(idx, &self.session);
-        if let Err(e) = view.apply(self.filter.clone()) {
-            self.status = format!("Export filter: {e}");
-            return;
-        }
-        if !self.sort_keys.is_empty() {
-            if let Err(e) = view.sort(self.sort_keys.clone()) {
-                self.status = format!("Export sort: {e}");
-                return;
-            }
-        }
         let comment = self.timeline_comment.clone();
         // Omit any adopted source Tag/Comment columns so they are not duplicated
         // by the appended Tags/Comment columns.
@@ -722,16 +818,471 @@ impl TlxApp {
         if self.adopted.comment >= 0 {
             omit.insert(self.adopted.comment as usize);
         }
-        match crate::engine::export::export_omitting_with_comment(
-            &view,
-            &self.session,
-            &dest,
-            &omit,
-            &comment,
-        ) {
-            Ok(()) => self.status = format!("Exported {} rows to {dest}", view.len()),
-            Err(e) => self.status = format!("Export failed: {e}"),
+        self.spawn_export(dest, ExportSpec::Current { omit, comment });
+    }
+
+    /// Write the current view (self.rows, with filter + sort already applied) to
+    /// `dest`, off the UI thread for a large file. Mirrors spawn_filter: a small
+    /// view exports inline; a large one runs on a worker with progress + cancel,
+    /// so the window never freezes on a multi-GB write. The worker reads the
+    /// annotation overlay through a Send+Sync snapshot, same as the filter scan.
+    fn spawn_export(&mut self, dest: String, spec: ExportSpec) {
+        let Some(idx) = self.idx.clone() else {
+            self.status = "Open a file first.".to_string();
+            return;
+        };
+        self.cancel_job();
+        let rows = self.rows.clone();
+        let n = rows.len();
+        if n < Self::ASYNC_ROW_THRESHOLD {
+            let mut view = View::new(&idx, &self.session);
+            view.set_rows(rows);
+            let progress = AtomicUsize::new(0);
+            let cancel = AtomicBool::new(false);
+            let t0 = std::time::Instant::now();
+            match run_export(&view, &dest, &spec, &progress, &cancel) {
+                Ok(crate::engine::export::ExportOutcome::Done(w)) => {
+                    self.status = format!("Exported {w} rows to {dest} in {:.0?}", t0.elapsed());
+                }
+                Ok(crate::engine::export::ExportOutcome::Cancelled) => {
+                    self.status = "Export cancelled.".to_string();
+                }
+                Err(e) => self.status = format!("Export failed: {e}"),
+            }
+            return;
         }
+        let snap = self.session.snapshot();
+        let progress = Arc::new(AtomicUsize::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx): (Sender<JobResult>, Receiver<JobResult>) = std::sync::mpsc::channel();
+        let p2 = Arc::clone(&progress);
+        let c2 = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            let mut view = View::new(&idx, &snap);
+            view.set_rows(rows);
+            let msg = match run_export(&view, &dest, &spec, &p2, &c2) {
+                Ok(crate::engine::export::ExportOutcome::Done(w)) => JobResult::Export(Ok((w, dest))),
+                Ok(crate::engine::export::ExportOutcome::Cancelled) => JobResult::Cancelled,
+                Err(e) => JobResult::Export(Err(e.to_string())),
+            };
+            let _ = tx.send(msg);
+        });
+        self.job = Some(ScanJob {
+            kind: JobKind::Export,
+            rx,
+            progress,
+            cancel,
+            total: n,
+            started: std::time::Instant::now(),
+        });
+        self.status = "Exporting\u{2026}".to_string();
+    }
+
+    /// The display name of data column `c`: the renamed name if set, else the
+    /// raw source header.
+    fn col_display_name(&self, c: usize) -> String {
+        if let Some(n) = self.col_names.get(c).filter(|n| !n.is_empty()) {
+            return n.clone();
+        }
+        self.idx
+            .as_ref()
+            .and_then(|i| i.headers().get(c).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Open the "To Timeline" export builder. If a layout was saved for this
+    /// case/file, restore it; otherwise seed the five default output columns
+    /// with a best-guess mapping of the current columns.
+    fn open_timeline_export_builder(&mut self) {
+        if self.idx.is_none() {
+            self.status = "Open a file first.".to_string();
+            return;
+        }
+        self.timeline_export = Some(match self.load_export_layout() {
+            Some(stored) => self.timeline_export_from_stored(&stored),
+            None => self.build_timeline_export(),
+        });
+    }
+
+    /// Load the saved export layout: from the case DB in case mode, else the
+    /// per-file prefs store. None if nothing is saved.
+    fn load_export_layout(&self) -> Option<StoredExportLayout> {
+        if self.case.is_some() && self.cur_timeline.is_some() {
+            return self.case.as_ref().and_then(|c| c.export_layout().ok().flatten());
+        }
+        if self.path.is_empty() {
+            return None;
+        }
+        self.prefs.export_layout(&self.path)
+    }
+
+    /// Persist the current builder layout: to the case DB in case mode, else
+    /// the per-file prefs store.
+    fn save_export_layout(&mut self, te: &TimelineExport) {
+        let stored = StoredExportLayout {
+            tagged_only: te.tagged_only,
+            columns: te
+                .cols
+                .iter()
+                .map(|c| StoredExportCol {
+                    name: c.name.clone(),
+                    sources: c.sources.iter().map(stored_source).collect(),
+                })
+                .collect(),
+        };
+        if self.case.is_some() && self.cur_timeline.is_some() {
+            if let Some(case) = self.case.as_mut() {
+                let _ = case.set_export_layout(&stored);
+            }
+        } else if !self.path.is_empty() {
+            self.prefs.set_export_layout(&self.path, stored);
+        }
+    }
+
+    /// Rebuild a builder from a saved layout, resolving each stored source
+    /// against the current columns. Any current source not referenced by the
+    /// layout stays in the palette, so columns added since the layout was saved
+    /// are still reachable.
+    fn timeline_export_from_stored(&self, stored: &StoredExportLayout) -> TimelineExport {
+        // Start from the full pool of current sources, then move resolved ones
+        // into their output columns.
+        let mut base = self.build_source_pool();
+        let take_data = |pool: &mut Vec<SourceCol>, name: &str| -> Option<SourceCol> {
+            let pos = pool
+                .iter()
+                .position(|s| s.col >= 0 && s.name.eq_ignore_ascii_case(name))?;
+            Some(pool.remove(pos))
+        };
+        let take_virtual = |pool: &mut Vec<SourceCol>, want: ColumnRef| -> Option<SourceCol> {
+            let pos = pool.iter().position(|s| s.col == want)?;
+            Some(pool.remove(pos))
+        };
+
+        let mut cols = Vec::with_capacity(stored.columns.len());
+        for sc in &stored.columns {
+            let mut sources = Vec::new();
+            for src in &sc.sources {
+                let got = match src.kind.as_str() {
+                    "tags" => take_virtual(&mut base, COL_TAGS),
+                    "comment" => take_virtual(&mut base, COL_COMMENT),
+                    _ => take_data(&mut base, &src.name),
+                };
+                if let Some(s) = got {
+                    sources.push(s);
+                }
+            }
+            cols.push(ExportCol { name: sc.name.clone(), sources });
+        }
+        TimelineExport { cols, unassigned: base, new_col_name: String::new(), tagged_only: stored.tagged_only }
+    }
+
+    /// The draggable source pool for the builder: visible data columns (adopted
+    /// ones excluded) plus the virtual Tags and Comment.
+    fn build_source_pool(&self) -> Vec<SourceCol> {
+        let n = self.idx.as_ref().map(|i| i.headers().len()).unwrap_or(0);
+        let mut pool: Vec<SourceCol> = Vec::new();
+        for c in 0..n as ColumnRef {
+            if self.adopted.has(c) {
+                continue;
+            }
+            pool.push(SourceCol { col: c, name: self.col_display_name(c as usize) });
+        }
+        pool.push(SourceCol { col: COL_TAGS, name: "Tags".to_string() });
+        pool.push(SourceCol { col: COL_COMMENT, name: "Comment".to_string() });
+        pool
+    }
+
+    /// Build the initial builder state: all draggable sources (visible data
+    /// columns plus the virtual Tags/Comment) and the five default output
+    /// columns, with obvious name matches pre-mapped. Unmatched sources stay in
+    /// the palette.
+    fn build_timeline_export(&self) -> TimelineExport {
+        // Sources are the columns the grid shows: data columns minus any
+        // adopted ones (those are folded into the virtual Tags/Comment), then
+        // the virtual Tags and Comment themselves.
+        let mut pool = self.build_source_pool();
+
+        // Pull the first source whose display name contains any needle
+        // (case-insensitive), removing it from the pool.
+        fn take_match(pool: &mut Vec<SourceCol>, needles: &[&str]) -> Option<SourceCol> {
+            let pos = pool.iter().position(|s| {
+                let low = s.name.to_lowercase();
+                needles.iter().any(|needle| low.contains(needle))
+            })?;
+            Some(pool.remove(pos))
+        }
+        fn take_ref(pool: &mut Vec<SourceCol>, want: ColumnRef) -> Option<SourceCol> {
+            let pos = pool.iter().position(|s| s.col == want)?;
+            Some(pool.remove(pos))
+        }
+        fn col(name: &str, src: Option<SourceCol>) -> ExportCol {
+            ExportCol { name: name.to_string(), sources: src.into_iter().collect() }
+        }
+
+        let timestamp = take_match(&mut pool, &["datetime", "timestamp", "time", "date"]);
+        let typ = take_match(&mut pool, &["type", "desc", "category", "field", "artifact"]);
+        let event = take_match(&mut pool, &["message", "event", "detail", "descrip", "activity", "summary"]);
+        // Comments/Tag default to the session's own annotations.
+        let comments = take_ref(&mut pool, COL_COMMENT);
+        let tag = take_ref(&mut pool, COL_TAGS);
+
+        let cols = vec![
+            col("Timestamp", timestamp),
+            col("Type/Field", typ),
+            col("Event", event),
+            col("Comments", comments),
+            col("Tag", tag),
+        ];
+        TimelineExport { cols, unassigned: pool, new_col_name: String::new(), tagged_only: false }
+    }
+
+    /// Draw the "To Timeline" export builder: a palette of unassigned timeline
+    /// columns on the left and the output columns on the right, wired with
+    /// drag-and-drop. Early-returns when the builder is closed.
+    fn timeline_export_window(&mut self, ctx: &egui::Context) {
+        let Some(mut te) = self.timeline_export.take() else { return };
+        let mut open = true;
+        let mut do_export = false;
+        let mut cancel = false;
+        let mut pending_move: Option<(ColumnRef, DropDest)> = None;
+        let mut pending_reorder: Option<(usize, usize)> = None;
+        let mut remove_col: Option<usize> = None;
+
+        // Cap the window to the screen so the action row never slides under
+        // the main window's bottom edge.
+        let screen_h = ctx.input(|i| i.viewport_rect().height());
+        let max_h = (screen_h - 80.0).max(240.0);
+        egui::Window::new("Export to timeline")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([760.0, 520.0])
+            .max_height(max_h)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                // Dark-mode contrast: the default text-field fill is near-black
+                // on an already-dark window, so lift it and give widgets a
+                // visible border.
+                if ui.visuals().dark_mode {
+                    let v = ui.visuals_mut();
+                    v.extreme_bg_color = Color32::from_gray(42);
+                    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_gray(90));
+                    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_gray(130));
+                }
+                ui.label(
+                    "Drag timeline columns onto the export columns on the right. An export \
+                     column fed by two or more timeline columns is written as \
+                     \"name: value; \" for each source.",
+                );
+                ui.separator();
+
+                // Reserve room for the controls below the mapping panes (add
+                // column, checkbox, two separators, action buttons) so the
+                // panes get the rest and the buttons stay on screen.
+                let row = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                let reserved = 3.0 * row + 28.0;
+                let body_h = (ui.available_height() - reserved).max(140.0);
+
+                ui.horizontal_top(|ui| {
+                    // Left: palette of unassigned sources (also a drop target,
+                    // so you can drag a column back out of an export column).
+                    ui.vertical(|ui| {
+                        ui.set_width(220.0);
+                        ui.strong("Timeline columns");
+                        let (_, dropped) = ui.dnd_drop_zone::<DragCol, _>(
+                            egui::Frame::group(ui.style()),
+                            |ui| {
+                                ui.set_min_width(200.0);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("te-palette")
+                                    .max_height(body_h)
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        ui.set_min_height(body_h);
+                                        for s in &te.unassigned {
+                                            let id = egui::Id::new(("te-src", s.col));
+                                            ui.dnd_drag_source(id, DragCol(s.col), |ui| {
+                                                source_chip(ui, &s.name);
+                                            });
+                                        }
+                                        if te.unassigned.is_empty() {
+                                            ui.weak("(all columns assigned)");
+                                        }
+                                    });
+                            },
+                        );
+                        if let Some(p) = dropped {
+                            pending_move = Some((p.0, DropDest::Unassigned));
+                        }
+                    });
+                    ui.separator();
+                    // Right: the output columns. Each is a drop target for a
+                    // dragged column (reorder by its grip handle) as well as for
+                    // source chips.
+                    ui.vertical(|ui| {
+                        ui.strong("Export columns");
+                        ui.weak("Drag the dotted handle on the left of a column to reorder.");
+                        egui::ScrollArea::vertical()
+                            .id_salt("te-cols")
+                            .max_height(body_h)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                for (i, ec) in te.cols.iter_mut().enumerate() {
+                                    let (_, col_dropped) = ui.dnd_drop_zone::<DragColIdx, _>(
+                                        egui::Frame::new().inner_margin(3.0),
+                                        |ui| {
+                                            ui.horizontal(|ui| {
+                                                // Grip handle: dragging it reorders
+                                                // the column.
+                                                let grip_id = egui::Id::new(("te-col-grip", i));
+                                                ui.dnd_drag_source(grip_id, DragColIdx(i), |ui| {
+                                                    grip_handle(ui);
+                                                });
+                                                ui.add(
+                                                    egui::TextEdit::singleline(&mut ec.name)
+                                                        .desired_width(150.0),
+                                                );
+                                                if ui
+                                                    .small_button("\u{1F5D1}")
+                                                    .on_hover_text("Remove column")
+                                                    .clicked()
+                                                {
+                                                    remove_col = Some(i);
+                                                }
+                                            });
+                                            let (_, dropped) = ui.dnd_drop_zone::<DragCol, _>(
+                                                egui::Frame::group(ui.style()),
+                                                |ui| {
+                                                    ui.set_min_width(410.0);
+                                                    ui.set_min_height(30.0);
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        for s in &ec.sources {
+                                                            let id =
+                                                                egui::Id::new(("te-chip", i, s.col));
+                                                            ui.dnd_drag_source(
+                                                                id,
+                                                                DragCol(s.col),
+                                                                |ui| {
+                                                                    source_chip(ui, &s.name);
+                                                                },
+                                                            );
+                                                        }
+                                                        if ec.sources.is_empty() {
+                                                            ui.weak("drop timeline columns here");
+                                                        }
+                                                    });
+                                                },
+                                            );
+                                            if let Some(p) = dropped {
+                                                pending_move = Some((p.0, DropDest::Col(i)));
+                                            }
+                                        },
+                                    );
+                                    if let Some(src) = col_dropped {
+                                        pending_reorder = Some((src.0, i));
+                                    }
+                                    ui.add_space(6.0);
+                                }
+                            });
+                    });
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut te.new_col_name)
+                            .hint_text("New column name")
+                            .desired_width(170.0),
+                    );
+                    if ui.button("Add column").clicked() {
+                        let name = te.new_col_name.trim();
+                        let name = if name.is_empty() { "Column".to_string() } else { name.to_string() };
+                        te.cols.push(ExportCol { name, sources: Vec::new() });
+                        te.new_col_name.clear();
+                    }
+                });
+                ui.checkbox(&mut te.tagged_only, "Export tagged / commented fields only");
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Export\u{2026}").clicked() {
+                        do_export = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        // Apply a column reorder first, then a source move, then any removal.
+        // At most one drag-drop completes per frame, so these don't contend.
+        if let Some((from, to)) = pending_reorder {
+            if from != to && from < te.cols.len() {
+                let col = te.cols.remove(from);
+                let dest = to.min(te.cols.len());
+                te.cols.insert(dest, col);
+            }
+        }
+        if let Some((col, dest)) = pending_move {
+            te.move_to(col, dest);
+        }
+        if let Some(i) = remove_col {
+            if i < te.cols.len() {
+                let ec = te.cols.remove(i);
+                te.unassigned.extend(ec.sources);
+            }
+        }
+
+        if do_export {
+            // Keep the dialog open if the user cancels the save sheet; close it
+            // on a real write (success or failure is reported in the status).
+            if self.run_timeline_export(&te) {
+                open = false;
+            }
+        }
+        if cancel {
+            open = false;
+        }
+        if open {
+            self.timeline_export = Some(te);
+        }
+    }
+
+    /// Write the current view to a CSV using the builder's column layout.
+    /// Returns true if a destination was chosen (the export ran), false if the
+    /// save dialog was cancelled.
+    fn run_timeline_export(&mut self, te: &TimelineExport) -> bool {
+        if self.idx.is_none() {
+            self.status = "Open a file first.".to_string();
+            return false;
+        }
+        let default_name = {
+            let stem = file_stem(&self.path);
+            format!("{stem}-timeline.csv")
+        };
+        let Some(dest) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .set_file_name(default_name)
+            .save_file()
+        else {
+            return false;
+        };
+        let dest = dest.display().to_string();
+        let cols: Vec<crate::engine::export::TimelineCol> = te
+            .cols
+            .iter()
+            .map(|c| crate::engine::export::TimelineCol {
+                name: c.name.clone(),
+                sources: c.sources.iter().map(|s| (s.col, s.name.clone())).collect(),
+            })
+            .collect();
+        let comment = self.timeline_comment.clone();
+        // Persist the layout now, before the (possibly backgrounded) write, so
+        // it survives regardless of how the export itself ends.
+        self.save_export_layout(te);
+        self.spawn_export(
+            dest,
+            ExportSpec::Timeline { cols, comment, tagged_only: te.tagged_only },
+        );
+        true
     }
 
     /// Build and apply "<field> between t-5m and t+5m" for the given data
@@ -1445,9 +1996,16 @@ impl eframe::App for TlxApp {
                 if ui.button("Save").clicked() {
                     self.save_session();
                 }
-                if ui.button("Export\u{2026}").clicked() {
-                    self.export_view();
-                }
+                ui.menu_button("Export\u{2026}", |ui| {
+                    if ui.button("Current view").clicked() {
+                        self.export_view();
+                        ui.close();
+                    }
+                    if ui.button("To Timeline\u{2026}").clicked() {
+                        self.open_timeline_export_builder();
+                        ui.close();
+                    }
+                });
                 // Theme toggle (R3). Label shows the mode it switches to,
                 // matching the Fyne button.
                 let label = if self.dark { "\u{2600} Light" } else { "\u{1F319} Dark" };
@@ -1468,6 +2026,7 @@ impl eframe::App for TlxApp {
                 let verb = match job.kind {
                     JobKind::Filter | JobKind::FilterClear => "Filtering",
                     JobKind::Ioc | JobKind::IocAll => "Scanning IOCs",
+                    JobKind::Export => "Exporting",
                 };
                 ui.horizontal(|ui| {
                     ui.add(
@@ -1549,6 +2108,7 @@ impl eframe::App for TlxApp {
         if self.rename_cols_open {
             self.rename_columns_window(&ctx);
         }
+        self.timeline_export_window(&ctx);
         self.render_popouts(&ctx);
         self.render_candidate_review(&ctx);
         self.render_floating_panels(&ctx);
@@ -4088,6 +4648,69 @@ fn file_stem(path: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("");
     if stem.is_empty() { "case".to_string() } else { stem.to_string() }
+}
+
+/// Run an export over `view` according to `spec`, with progress + cancel.
+/// A free function so it can run on either the UI thread (small view) or a
+/// worker (large view); the View carries whichever overlay was handed to it.
+fn run_export(
+    view: &View,
+    dest: &str,
+    spec: &ExportSpec,
+    progress: &AtomicUsize,
+    cancel: &AtomicBool,
+) -> std::io::Result<crate::engine::export::ExportOutcome> {
+    match spec {
+        ExportSpec::Current { omit, comment } => {
+            crate::engine::export::export_current_tracked(view, dest, omit, comment, progress, cancel)
+        }
+        ExportSpec::Timeline { cols, comment, tagged_only } => crate::engine::export::export_timeline_tracked(
+            view,
+            dest,
+            cols,
+            comment,
+            *tagged_only,
+            progress,
+            cancel,
+        ),
+    }
+}
+
+/// Serialize a builder source column for persistence, tagging virtual columns
+/// by kind and data columns by their (name-resolvable) display name.
+fn stored_source(s: &SourceCol) -> StoredSource {
+    let kind = match s.col {
+        COL_TAGS => "tags",
+        COL_COMMENT => "comment",
+        _ => "data",
+    };
+    StoredSource { kind: kind.to_string(), name: s.name.clone() }
+}
+
+/// Draw a drag handle (two columns of three dots) for an export column. Painted
+/// rather than drawn from a font glyph so it renders regardless of which fonts
+/// egui bundles. The enclosing dnd_drag_source adds the grab cursor and the
+/// drag sense, so this only needs to be visible.
+fn grip_handle(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 20.0), egui::Sense::hover());
+    let color = ui.visuals().weak_text_color();
+    for row in 0..3 {
+        for col in 0..2 {
+            let x = rect.left() + 4.0 + col as f32 * 4.0;
+            let y = rect.center().y - 4.0 + row as f32 * 4.0;
+            ui.painter().circle_filled(egui::pos2(x, y), 1.2, color);
+        }
+    }
+}
+
+/// Draw a draggable source-column chip (a bordered label) for the export
+/// builder. The chip shows a grab cursor via the enclosing dnd_drag_source.
+fn source_chip(ui: &mut egui::Ui, name: &str) {
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(name);
+        });
 }
 
 /// Current time as an RFC3339 string for the added_at column. (The engine

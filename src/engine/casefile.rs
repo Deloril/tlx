@@ -412,6 +412,27 @@ CREATE TABLE IF NOT EXISTS tagged_snapshot (
         Ok(())
     }
 
+    /// export_layout returns the case's saved "To Timeline" export layout, or
+    /// None if none has been stored yet. One layout per case (meta table).
+    pub fn export_layout(&self) -> Result<Option<crate::prefs::StoredExportLayout>> {
+        let row: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key='export_layout'", [], |r| r.get(0))
+            .optional()?;
+        Ok(row.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    /// set_export_layout stores the case's "To Timeline" export layout.
+    pub fn set_export_layout(&mut self, layout: &crate::prefs::StoredExportLayout) -> Result<()> {
+        let data = serde_json::to_string(layout).map_err(|e| other(e.to_string()))?;
+        self.conn.execute(
+            "INSERT INTO meta(key,value) VALUES('export_layout',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![data],
+        )?;
+        Ok(())
+    }
+
     /// remove_timeline deletes a timeline and all of its annotations.
     pub fn remove_timeline(&mut self, id: i64) -> Result<()> {
         let tx = self.conn.transaction()?;
