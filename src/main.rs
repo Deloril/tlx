@@ -38,7 +38,7 @@ fn main() {
         ..Default::default()
     };
     let result = eframe::run_native(
-        "tlx-rust",
+        "tlx",
         native_options,
         Box::new(move |_cc| {
             let mut tlx_app = app::TlxApp::default();
