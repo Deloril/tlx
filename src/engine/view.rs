@@ -74,6 +74,11 @@ pub struct FilterSpec {
     pub conds: Vec<ColumnCond>,
     pub conds_any: bool,
     pub col_filters: HashMap<ColumnRef, String>,
+    /// Per-column value picker (the header funnel): a set of whole-cell values
+    /// per column. A row is kept if, for every column present here, its cell
+    /// equals one of that column's values (OR within a column, AND across
+    /// columns). An empty value list for a column is no constraint.
+    pub col_value_filters: HashMap<ColumnRef, Vec<String>>,
 }
 
 impl FilterSpec {
@@ -85,6 +90,7 @@ impl FilterSpec {
             && self.tags.is_empty()
             && self.conds.is_empty()
             && !has_col_filter(&self.col_filters)
+            && !self.col_value_filters.values().any(|v| !v.is_empty())
     }
 }
 
@@ -100,6 +106,7 @@ pub struct Matcher {
     needle: String, // lowercased when !cased
     cased: bool,
     non_empty: bool,
+    exact: bool,
 }
 
 impl Matcher {
@@ -110,9 +117,24 @@ impl Matcher {
                 needle: String::new(),
                 cased,
                 non_empty: true,
+                exact: false,
             });
         }
         Self::compile(value, false, cased)
+    }
+
+    /// exact builds a matcher that tests whole-cell equality rather than a
+    /// substring. Used by the per-column value picker (the header funnel), where
+    /// each ticked item is one distinct cell value and must not also match a
+    /// longer cell that merely contains it. Case-insensitive unless `cased`.
+    pub fn exact(value: &str, cased: bool) -> Matcher {
+        Matcher {
+            re: None,
+            needle: if cased { value.to_string() } else { value.to_lowercase() },
+            cased,
+            non_empty: false,
+            exact: true,
+        }
     }
 
     pub fn compile(value: &str, use_regexp: bool, cased: bool) -> Result<Matcher, regex::Error> {
@@ -128,6 +150,7 @@ impl Matcher {
                 needle: String::new(),
                 cased,
                 non_empty: false,
+                exact: false,
             })
         } else if cased {
             Ok(Matcher {
@@ -135,6 +158,7 @@ impl Matcher {
                 needle: value.to_string(),
                 cased: true,
                 non_empty: false,
+                exact: false,
             })
         } else {
             Ok(Matcher {
@@ -142,6 +166,7 @@ impl Matcher {
                 needle: value.to_lowercase(),
                 cased: false,
                 non_empty: false,
+                exact: false,
             })
         }
     }
@@ -149,6 +174,13 @@ impl Matcher {
     pub fn matches(&self, s: &str) -> bool {
         if self.non_empty {
             return !s.trim().is_empty();
+        }
+        if self.exact {
+            return if self.cased {
+                s == self.needle
+            } else {
+                s.to_lowercase() == self.needle
+            };
         }
         if let Some(re) = &self.re {
             return re.is_match(s);
@@ -221,6 +253,7 @@ pub(super) struct CompiledFilter<'a> {
     conds_any: bool,
     pub(super) expr: Option<RowPred<'a>>,
     col_filters: Vec<CompiledCond>,
+    col_value_filters: Vec<CompiledCond>,
 }
 
 /// View is an ordered subset of an Index's rows after filtering and sorting.
@@ -343,6 +376,7 @@ impl<'a> View<'a> {
             conds_any: spec.conds_any,
             expr: None,
             col_filters: Vec::new(),
+            col_value_filters: Vec::new(),
         };
         if !spec.query.is_empty() {
             let m = Matcher::compile(&spec.query, spec.regexp, spec.cased).map_err(|e| e.to_string())?;
@@ -385,6 +419,17 @@ impl<'a> View<'a> {
                 neg: false,
                 vals: vec![m],
             });
+        }
+        for (col_ref, values) in &spec.col_value_filters {
+            let vals: Vec<Matcher> = values.iter().map(|v| Matcher::exact(v, spec.cased)).collect();
+            if !vals.is_empty() {
+                cf.col_value_filters.push(CompiledCond {
+                    column: *col_ref,
+                    all: false,
+                    neg: false,
+                    vals,
+                });
+            }
         }
         Ok(cf)
     }
@@ -442,6 +487,13 @@ impl<'a> View<'a> {
         }
         for c in &cf.col_filters {
             if !self.column_match(row, rec, c.column, &c.vals[0]) {
+                return false;
+            }
+        }
+        // Each column's value picker is OR-within, AND-across: the row's cell
+        // must equal one of the ticked values for every column with a picker.
+        for c in &cf.col_value_filters {
+            if !self.cond_hit(row, rec, c) {
                 return false;
             }
         }
@@ -717,6 +769,37 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v.len(), 3, "charlie OR logout"); // bravo/logout, alpha/logout, charlie/login
+    }
+
+    // The per-column value picker (header funnel) matches whole cells, ORs the
+    // values within a column and ANDs across columns. Exact match means a
+    // ticked value never also matches a longer cell that merely contains it.
+    #[test]
+    fn test_col_value_filter() {
+        let (idx, _p) =
+            open_temp("host,event\nalpha,login\nbravo,logout\nalpha,logout\ncharlie,login_failed\n");
+        let s = Session::new("x");
+        let mut v = View::new(&idx, &s);
+
+        // event in {login, logout} — exact, so "login" does NOT match
+        // "login_failed".
+        let mut cvf = HashMap::new();
+        cvf.insert(1 as ColumnRef, vec!["login".to_string(), "logout".to_string()]);
+        v.apply(FilterSpec { col_value_filters: cvf, ..Default::default() }).unwrap();
+        assert_eq!(v.len(), 3, "login or logout, exact (login_failed excluded)");
+
+        // AND across columns: host=alpha AND event=logout -> one row.
+        let mut cvf = HashMap::new();
+        cvf.insert(0 as ColumnRef, vec!["alpha".to_string()]);
+        cvf.insert(1 as ColumnRef, vec!["logout".to_string()]);
+        v.apply(FilterSpec { col_value_filters: cvf, ..Default::default() }).unwrap();
+        assert_eq!(v.len(), 1, "alpha AND logout");
+
+        // An empty value list is no constraint.
+        let mut cvf = HashMap::new();
+        cvf.insert(0 as ColumnRef, Vec::new());
+        v.apply(FilterSpec { col_value_filters: cvf, ..Default::default() }).unwrap();
+        assert_eq!(v.len(), 4, "empty picker keeps every row");
     }
 
     #[test]

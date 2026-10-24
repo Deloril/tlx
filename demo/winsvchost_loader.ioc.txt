@@ -1,0 +1,25 @@
+# IOC list: winsvchost-loader
+# Built from the WKSTN-07 pivots. Paste this into a new IOC list in tlx
+# (or build it live from the Artifacts "Export list"), then Save & run it
+# against each timeline. Hits are tagged ioc:winsvchost-loader and the row
+# picks up the ## label as its comment.
+#
+# Note what this list deliberately does NOT cover: the SQL data files on the
+# server (CRM_prod.mdf / .ldf). Those carry no shared hash and live outside
+# the staging dir, so the IOC will not flag them. You still have to find and
+# tag the data theft by hand - that is the point.
+
+## Loader binary (hash + known aliases)
+/4d5e2b1a9c8f3e7d6a0b1c2d3e4f5a6b/
+svch0st.exe
+spoolsvc.exe
+invoice_scan.exe
+
+## Staging directory and collection archives
+\WinSvcHost\
+data.7z
+db_backup.7z
+
+## Persistence: Run key and scheduled task
+`Summary=Run\WinSvcHost
+WinSvcHostUpdate

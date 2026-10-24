@@ -378,6 +378,19 @@ impl Session {
         self.tag_defs.clone()
     }
 
+    /// TagCounts returns, for each tag name, how many rows carry it across the
+    /// whole dataset (not any filtered view). Only names with at least one
+    /// tagged row appear, so the caller defaults absent palette tags to zero.
+    pub fn tag_counts(&self) -> HashMap<String, usize> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for tags in self.tags.values() {
+            for t in tags {
+                *counts.entry(t.clone()).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
     /// TagColor returns the palette colour for a tag, or None if unknown.
     pub fn tag_color(&self, name: &str) -> Option<String> {
         self.tag_index.get(name).map(|&i| self.tag_defs[i].color.clone())

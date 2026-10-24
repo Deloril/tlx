@@ -30,10 +30,18 @@ pub struct PrefsData {
     /// startup variant; see dark_theme().
     #[serde(default = "default_true")]
     pub dark_theme: bool,
+    /// Alpha (0-255) of the row-tint wash painted behind a tagged row, applied
+    /// to every tag colour. Defaults to 0x40, the original fixed wash.
+    #[serde(default = "default_tag_opacity")]
+    pub tag_opacity: u8,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_tag_opacity() -> u8 {
+    0x40
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -280,6 +288,15 @@ impl Prefs {
 
     pub fn set_dark_theme(&mut self, dark: bool) {
         self.data.dark_theme = dark;
+        self.save();
+    }
+
+    pub fn tag_opacity(&self) -> u8 {
+        self.data.tag_opacity
+    }
+
+    pub fn set_tag_opacity(&mut self, alpha: u8) {
+        self.data.tag_opacity = alpha;
         self.save();
     }
 

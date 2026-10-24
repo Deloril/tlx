@@ -52,17 +52,35 @@ pub struct TlxApp {
     sort_desc: bool,
     row_height: f32,
 
+    // Word-wrap mode (toolbar "Wrap"): cells wrap to multiple lines and each
+    // row grows to fit its tallest cell, so wide content stays on screen rather
+    // than clipping off the right edge. `wrap_heights` is a per-view-position
+    // height cache; `wrap_sig` is a cheap fingerprint of the view it was built
+    // for, so the cache is rebuilt when the rows change (filter/sort) rather
+    // than every frame. Off by default.
+    wrap: bool,
+    wrap_heights: Vec<f32>,
+    wrap_sig: u64,
+
     // selection, keyed by master row; anchor is a view position for Shift-range.
     selected: BTreeSet<usize>,
     sel_anchor: Option<usize>,
 
     // per-column quick filters (header row), keyed by data column index.
     show_filter_row: bool,
+    // Columns hidden from the grid via the Columns dropdown. Empty = every
+    // column visible (the default). The row-number gutter is never hidden.
+    hidden_cols: std::collections::HashSet<ColumnRef>,
     col_filters: Vec<String>,
     // Quick-filter boxes for the virtual Tags and Comment columns (the data
     // col_filters vec is keyed by data-column index and can't hold these).
     col_filter_tags: String,
     col_filter_comment: String,
+    // Per-column value picker (header funnel): the applied set of whole-cell
+    // values per column, ANDed across columns with OR within. Empty = no
+    // picker on that column. `value_popup` is the open editor, if any.
+    col_value_filters: std::collections::HashMap<ColumnRef, Vec<String>>,
+    value_popup: Option<ValueFilterPopup>,
 
     // Last substring highlighted in a Details-pane field: (field salt, text).
     // Kept across frames because a right-click collapses the live selection
@@ -126,6 +144,17 @@ pub struct TlxApp {
     editing_note_buf: String,
     // one-shot: focus the edit field on the first frame after an edit begins.
     editing_note_focus: bool,
+    // A duplicate add was attempted: flash the existing entry a few times
+    // instead of adding a second copy. (kind, id, start-time). The start is
+    // filled on the first render after the attempt, since note_add has no clock.
+    note_flash: Option<(NoteKind, i64, Option<f64>)>,
+    // A tag delete from the left pane is awaiting confirmation (the tag name).
+    // Deleting a tag strips it from every tagged row and can't be undone, so
+    // the sidebar stages it here and a modal confirms before it runs.
+    confirm_tag_delete: Option<String>,
+    // Open "Export list" window for a notes list: (title, joined text). The text
+    // is a scratch buffer the user can edit before copying.
+    notes_export: Option<(String, String)>,
 
     // save-current-view input
     new_view_name: String,
@@ -139,6 +168,9 @@ pub struct TlxApp {
     ioc_sel: Option<usize>,
     ioc_name: String,
     ioc_body: String,
+    // Keep the IOC window above other windows; on by default like the cell
+    // pop-outs and candidate-review window.
+    ioc_pinned: bool,
 
     // Cell pop-out windows (R4): each is its own egui viewport, optionally
     // pinned always-on-top. Keyed by a monotonic id so several can coexist.
@@ -152,6 +184,8 @@ pub struct TlxApp {
 
     // theme (R3)
     dark: bool,
+    // Alpha (0-255) of the tag highlight wash, shared by every tag. Persisted.
+    tag_opacity: u8,
 
     // case management (R7). When `case` is Some the app works inside a case:
     // annotations persist to the case DB (not the sidecar), notes/IOC/timeline-
@@ -218,9 +252,9 @@ enum JobResult {
     Cancelled,
 }
 
-/// What to write in a background export. Both flavours run over the already
-/// computed current view (self.rows: filter + sort applied); the worker only
-/// reads rows and writes them, never re-scans.
+/// What to write in a background export. The worker only reads rows and writes
+/// them, never re-scans; which rows it sees is decided by the ExportScope the
+/// caller pairs with the spec.
 enum ExportSpec {
     /// Plain "Current view" export: source columns (minus `omit`) plus the
     /// appended Tags/Comment columns, with an optional timeline-comment prelude.
@@ -234,6 +268,20 @@ enum ExportSpec {
         comment: String,
         tagged_only: bool,
     },
+}
+
+/// Which rows an export writes. "Current view" exports exactly what is on
+/// screen (filter + sort already applied); "To Timeline" exports the whole
+/// timeline regardless of the active filter, so the export is a complete record
+/// rather than a snapshot of the current search.
+enum ExportScope {
+    /// Export the already-computed current view: filter + sort applied.
+    CurrentView(Vec<usize>),
+    /// Export every row in the source, ignoring the filter, in the current
+    /// sort order (empty keys = source order). The row set and sort are
+    /// resolved inside spawn_export so a sort over a huge file runs off the UI
+    /// thread, same as a filter does.
+    FullTimeline { sort_keys: Vec<SortKey> },
 }
 
 /// The four floatable right-dock panels (R6), matching the Fyne dock. Ordered
@@ -275,6 +323,21 @@ impl Default for CondRow {
     }
 }
 
+/// Open state for a per-column value picker (the header funnel). `distinct` is
+/// the deduplicated set of cell values that were visible in `col` when the
+/// picker opened, sorted; `checked` is the working selection the user is
+/// editing. `truncated` records that the view had more distinct values than the
+/// gather cap, so the UI can say the list is partial. Gathered once on open so
+/// a huge view is scanned a single time, not every frame the picker is shown.
+struct ValueFilterPopup {
+    col: ColumnRef,
+    title: String,
+    distinct: Vec<String>,
+    truncated: bool,
+    checked: BTreeSet<String>,
+    search: String,
+}
+
 /// A floating cell detail window. `editable` mirrors the grid's edit
 /// permission: a comment cell, or any cell in World-write mode.
 struct CellPopout {
@@ -302,6 +365,8 @@ struct CandidateReview {
     cands: Vec<crate::engine::extract::Candidate>,
     added: Vec<bool>,
     open: bool,
+    // Keep the pop-out above other windows; on by default like the cell pop-outs.
+    pinned: bool,
 }
 
 /// A source timeline column available to the "To Timeline" export builder: a
@@ -383,6 +448,7 @@ impl Default for TlxApp {
     fn default() -> Self {
         let prefs = Prefs::load();
         let dark = prefs.dark_theme();
+        let tag_opacity = prefs.tag_opacity();
         TlxApp {
             idx: None,
             session: Session::new(""),
@@ -394,11 +460,18 @@ impl Default for TlxApp {
             status: "Open a CSV to begin.".to_string(),
             sort_col: None,
             sort_desc: false,
+            tag_opacity,
             row_height: 22.0,
+            wrap: false,
+            wrap_heights: Vec::new(),
+            wrap_sig: 0,
             selected: BTreeSet::new(),
             sel_anchor: None,
             show_filter_row: true,
+            hidden_cols: std::collections::HashSet::new(),
             col_filters: Vec::new(),
+            col_value_filters: std::collections::HashMap::new(),
+            value_popup: None,
             col_filter_tags: String::new(),
             col_filter_comment: String::new(),
             details_sel: None,
@@ -428,6 +501,9 @@ impl Default for TlxApp {
             editing_note: None,
             editing_note_buf: String::new(),
             editing_note_focus: false,
+            note_flash: None,
+            confirm_tag_delete: None,
+            notes_export: None,
             new_view_name: String::new(),
             show_ioc: false,
             ioc_lists: Vec::new(),
@@ -435,6 +511,7 @@ impl Default for TlxApp {
             ioc_sel: None,
             ioc_name: String::new(),
             ioc_body: String::new(),
+            ioc_pinned: true,
             popouts: Vec::new(),
             candidate_review: None,
             menu_added: None,
@@ -514,6 +591,9 @@ impl TlxApp {
         self.col_filters = vec![String::new(); idx.headers().len()];
         self.col_filter_tags.clear();
         self.col_filter_comment.clear();
+        self.col_value_filters.clear();
+        self.value_popup = None;
+        self.hidden_cols.clear();
         self.session = session;
         self.path = path.to_string();
         self.idx = Some(Arc::new(idx));
@@ -616,6 +696,12 @@ impl TlxApp {
             conds,
             conds_any: self.conds_any,
             col_filters,
+            col_value_filters: self
+                .col_value_filters
+                .iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(c, v)| (*c, v.clone()))
+                .collect(),
             ..Default::default()
         };
         self.applied_filter = self.filter_text.clone();
@@ -772,6 +858,8 @@ impl TlxApp {
         }
         self.col_filter_tags.clear();
         self.col_filter_comment.clear();
+        self.col_value_filters.clear();
+        self.value_popup = None;
         self.tagged_only = false;
         self.tag_checklist.clear();
         self.builder_conds.clear();
@@ -831,25 +919,37 @@ impl TlxApp {
         if self.adopted.comment >= 0 {
             omit.insert(self.adopted.comment as usize);
         }
-        self.spawn_export(dest, ExportSpec::Current { omit, comment });
+        let rows = self.rows.clone();
+        self.spawn_export(dest, ExportSpec::Current { omit, comment }, ExportScope::CurrentView(rows));
     }
 
-    /// Write the current view (self.rows, with filter + sort already applied) to
-    /// `dest`, off the UI thread for a large file. Mirrors spawn_filter: a small
-    /// view exports inline; a large one runs on a worker with progress + cancel,
-    /// so the window never freezes on a multi-GB write. The worker reads the
-    /// annotation overlay through a Send+Sync snapshot, same as the filter scan.
-    fn spawn_export(&mut self, dest: String, spec: ExportSpec) {
+    /// Write an export to `dest`, off the UI thread for a large file. Mirrors
+    /// spawn_filter: a small view exports inline; a large one runs on a worker
+    /// with progress + cancel, so the window never freezes on a multi-GB write.
+    /// The worker reads the annotation overlay through a Send+Sync snapshot, same
+    /// as the filter scan. `scope` decides the rows: the current view as-is, or
+    /// the whole timeline re-sorted (the sort runs on the worker for a big file,
+    /// since a sort over a multi-GB file is itself a full scan).
+    fn spawn_export(&mut self, dest: String, spec: ExportSpec, scope: ExportScope) {
         let Some(idx) = self.idx.clone() else {
             self.status = "Open a file first.".to_string();
             return;
         };
         self.cancel_job();
-        let rows = self.rows.clone();
+        let (rows, sort_keys) = match scope {
+            ExportScope::CurrentView(rows) => (rows, Vec::new()),
+            ExportScope::FullTimeline { sort_keys } => ((0..idx.row_count()).collect(), sort_keys),
+        };
         let n = rows.len();
         if n < Self::ASYNC_ROW_THRESHOLD {
             let mut view = View::new(&idx, &self.session);
             view.set_rows(rows);
+            if !sort_keys.is_empty() {
+                if let Err(e) = view.sort(sort_keys) {
+                    self.status = format!("Export failed: {e}");
+                    return;
+                }
+            }
             let progress = AtomicUsize::new(0);
             let cancel = AtomicBool::new(false);
             let t0 = std::time::Instant::now();
@@ -873,6 +973,12 @@ impl TlxApp {
         std::thread::spawn(move || {
             let mut view = View::new(&idx, &snap);
             view.set_rows(rows);
+            if !sort_keys.is_empty() {
+                if let Err(e) = view.sort(sort_keys) {
+                    let _ = tx.send(JobResult::Export(Err(e)));
+                    return;
+                }
+            }
             let msg = match run_export(&view, &dest, &spec, &p2, &c2) {
                 Ok(crate::engine::export::ExportOutcome::Done(w)) => JobResult::Export(Ok((w, dest))),
                 Ok(crate::engine::export::ExportOutcome::Cancelled) => JobResult::Cancelled,
@@ -1291,9 +1397,12 @@ impl TlxApp {
         // Persist the layout now, before the (possibly backgrounded) write, so
         // it survives regardless of how the export itself ends.
         self.save_export_layout(te);
+        // A timeline export is a complete record, so it covers every row
+        // regardless of the active filter, in the current sort order.
         self.spawn_export(
             dest,
             ExportSpec::Timeline { cols, comment, tagged_only: te.tagged_only },
+            ExportScope::FullTimeline { sort_keys: self.sort_keys.clone() },
         );
         true
     }
@@ -1541,6 +1650,19 @@ impl TlxApp {
             self.status = format!("Save annotations: {e}");
             return;
         }
+        // Investigator's notes live in the standalone prefs store, keyed by the
+        // source path; save_annotations doesn't touch them. Copy them into the
+        // case DB for the new timeline so the conversion keeps them, preserving
+        // order and the done flag.
+        for kind in [NoteKind::Artifact, NoteKind::Time] {
+            for n in self.prefs.notes(&src, kind) {
+                if let Ok(added) = case.add_note(tl.id, note_kind_str(kind), &n.text) {
+                    if n.done {
+                        let _ = case.set_note_done(added.id, true);
+                    }
+                }
+            }
+        }
         self.set_case(case);
         self.open_timeline_with_index(tl, idx);
     }
@@ -1645,6 +1767,24 @@ impl TlxApp {
         let (headers, records) = master_grid(&entries);
         let idx = Index::new_memory(headers, records);
         let mut session = Session::new("(master)");
+        // The master session is built fresh, so it starts with only the default
+        // palette and no row tags. Seed it from the case: first the shared
+        // palette (so custom tags like ioc:case list in the sidebar with their
+        // real colour), then each row's tags (so the counts are right and rows
+        // tint). Seeding needs a writable mode; lock it read-only afterwards.
+        session.set_mode(Mode::Investigator);
+        if let Some(case) = self.case.as_ref() {
+            if let Ok(defs) = case.tag_defs() {
+                for d in &defs {
+                    let _ = session.define_tag(&d.name, &d.color);
+                }
+            }
+        }
+        for (i, e) in entries.iter().enumerate() {
+            for t in &e.tags {
+                let _ = session.add_tag(i, t);
+            }
+        }
         session.set_mode(Mode::ReadOnly);
         let n = entries.len();
         self.master_entries = entries;
@@ -1998,13 +2138,16 @@ impl eframe::App for TlxApp {
                 if ui.button("Apply").clicked() {
                     self.apply_filter();
                 }
-                if ui.button("Clear").clicked() {
+                if ui.button("Clear all filters").clicked() {
                     self.clear_filters();
                 }
                 if ui.checkbox(&mut self.tagged_only, "Tagged only").changed() {
                     self.apply_filter();
                 }
                 if ui.toggle_value(&mut self.show_filter_row, "Filter row").clicked() {}
+                ui.toggle_value(&mut self.wrap, "Wrap")
+                    .on_hover_text("Word-wrap cells so wide content stays on screen");
+                self.columns_menu(ui);
                 ui.separator();
                 if ui.button("Save").clicked() {
                     self.save_session();
@@ -2026,6 +2169,12 @@ impl eframe::App for TlxApp {
                     self.dark = !self.dark;
                     self.prefs.set_dark_theme(self.dark);
                 }
+                // Right-aligned: show/hide the right side panel. Sits at the far
+                // right of the toolbar, above the panel it controls.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.toggle_value(&mut self.show_right_dock, "Side panel")
+                        .on_hover_text("Show or hide the right side panel");
+                });
             });
             // While a background scan runs, show a live progress bar and a
             // Cancel button in place of the plain status line.
@@ -2122,6 +2271,9 @@ impl eframe::App for TlxApp {
             self.rename_columns_window(&ctx);
         }
         self.timeline_export_window(&ctx);
+        self.value_filter_window(&ctx);
+        self.notes_export_window(&ctx);
+        self.confirm_tag_delete_window(&ctx);
         self.render_popouts(&ctx);
         self.render_candidate_review(&ctx);
         self.render_floating_panels(&ctx);
@@ -2145,6 +2297,46 @@ impl eframe::App for TlxApp {
 }
 
 impl TlxApp {
+    /// The "Columns" toolbar dropdown: a checkbox per column (Tags/Comment then
+    /// the data columns, matching the grid, minus the always-on # gutter).
+    /// Unchecking hides a column from the grid; "Show all" clears every hide.
+    /// All columns start checked.
+    fn columns_menu(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.idx.clone() else { return };
+        let n_data = idx.headers().len();
+        let mut cols: Vec<ColumnRef> = Vec::new();
+        if self.annot_cols {
+            cols.push(COL_TAGS);
+            cols.push(COL_COMMENT);
+        }
+        cols.extend((0..n_data as ColumnRef).filter(|&c| !self.adopted.has(c)));
+
+        ui.menu_button("Columns", |ui| {
+            ui.set_min_width(160.0);
+            if ui.button("Show all").clicked() {
+                self.hidden_cols.clear();
+            }
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                for c in cols {
+                    let name = match c {
+                        COL_TAGS => "Tags".to_string(),
+                        COL_COMMENT => "Comment".to_string(),
+                        c => self.col_display_name(c as usize),
+                    };
+                    let mut visible = !self.hidden_cols.contains(&c);
+                    if ui.checkbox(&mut visible, name).changed() {
+                        if visible {
+                            self.hidden_cols.remove(&c);
+                        } else {
+                            self.hidden_cols.insert(c);
+                        }
+                    }
+                }
+            });
+        });
+    }
+
     fn grid(&mut self, ui: &mut egui::Ui) {
         // Split-borrow disjoint fields so idx (needs &mut for its row cache)
         // and session (tags/comments/tints) can both be read in the row loop.
@@ -2156,11 +2348,17 @@ impl TlxApp {
             col_filters,
             col_filter_tags,
             col_filter_comment,
+            col_value_filters,
+            hidden_cols,
             applied_filter,
             sort_col,
             sort_desc,
             show_filter_row,
             row_height,
+            tag_opacity,
+            wrap,
+            wrap_heights,
+            wrap_sig,
             want_scroll_to,
             path,
             annot_cols,
@@ -2186,6 +2384,8 @@ impl TlxApp {
         let sort_col = *sort_col;
         let sort_desc = *sort_desc;
         let show_filter_row = *show_filter_row;
+        let tag_opacity = *tag_opacity;
+        let wrap = *wrap;
         let annot_cols = *annot_cols;
         let master_mode = *master_mode;
         let adopted = *adopted;
@@ -2208,6 +2408,9 @@ impl TlxApp {
         // Skip any data column adopted as the session's tags/comment: its
         // content already shows in the virtual Tags/Comment columns.
         columns.extend((0..n_data as ColumnRef).filter(|&c| !adopted.has(c)));
+        // Drop columns the user hid via the Columns dropdown. The # gutter is
+        // never hidden, so it is exempt.
+        columns.retain(|c| *c == COL_ROW_NUM || !hidden_cols.contains(c));
         let col_title = |refc: ColumnRef| -> String {
             match refc {
                 COL_ROW_NUM => "#".to_string(),
@@ -2223,6 +2426,66 @@ impl TlxApp {
 
         use egui_extras::{Column, TableBuilder};
 
+        // In wrap mode each row must be tall enough for its tallest wrapped
+        // cell. Estimating that from the cell text needs a pass over every row,
+        // so it's cached and only rebuilt when the view (rows or columns)
+        // changes - gated by a cheap fingerprint rather than redone each frame.
+        // The estimate rounds up and runs slightly generous: overshooting adds
+        // a little blank space, undershooting would clip, which wrap exists to
+        // avoid. Widths track the Column::initial values below; resizing a
+        // column narrower than its initial can clip until the view refreshes.
+        if wrap {
+            use std::hash::{Hash, Hasher};
+            let mut hsh = std::collections::hash_map::DefaultHasher::new();
+            n_rows.hash(&mut hsh);
+            columns.hash(&mut hsh);
+            rows.first().hash(&mut hsh);
+            rows.last().hash(&mut hsh);
+            rows.get(n_rows / 2).hash(&mut hsh);
+            let sig = hsh.finish();
+            if *wrap_sig != sig || wrap_heights.len() != n_rows {
+                let col_px = |refc: ColumnRef| -> f32 {
+                    match refc {
+                        COL_ROW_NUM => 64.0,
+                        COL_TAGS => 150.0,
+                        COL_COMMENT => 220.0,
+                        _ => 240.0,
+                    }
+                };
+                wrap_heights.clear();
+                wrap_heights.reserve(n_rows);
+                for &master in rows.iter() {
+                    let rec = idx.row(master).unwrap_or_default();
+                    let mut max_lines = 1usize;
+                    for &refc in &columns {
+                        if refc == COL_ROW_NUM {
+                            continue;
+                        }
+                        let text = match refc {
+                            COL_TAGS => session.tags(master).join(", "),
+                            COL_COMMENT => session.comment(master),
+                            c => session
+                                .cell_override(master, c as usize)
+                                .unwrap_or_else(|| rec.get(c as usize).cloned().unwrap_or_default()),
+                        };
+                        if text.is_empty() {
+                            continue;
+                        }
+                        let usable = (col_px(refc) - 16.0).max(20.0);
+                        let mut lines = 0usize;
+                        for seg in text.split('\n') {
+                            let chars = seg.chars().count().max(1) as f32;
+                            lines += ((chars * 8.0) / usable).ceil() as usize;
+                        }
+                        max_lines = max_lines.max(lines.max(1));
+                    }
+                    let height = (max_lines.min(200) as f32) * 16.0 + 6.0;
+                    wrap_heights.push(height.max(*row_height));
+                }
+                *wrap_sig = sig;
+            }
+        }
+
         let header_h = if show_filter_row { 48.0 } else { 24.0 };
         let mut clicked_col: Option<ColumnRef> = None;
         let mut col_filter_changed = false;
@@ -2230,6 +2493,9 @@ impl TlxApp {
         let mut header_sort: Option<(ColumnRef, bool)> = None; // (col, desc)
         let mut header_empty: Option<(ColumnRef, bool)> = None; // (col, want_empty)
         let mut header_clear: Option<ColumnRef> = None;
+        // A header funnel was clicked: open the per-column value picker for this
+        // column. Gathered + opened after the table borrow ends (needs &mut self).
+        let mut open_value_filter: Option<ColumnRef> = None;
         let mut row_clicks: Vec<(usize, egui::Modifiers)> = Vec::new();
         let mut dbl_click_cell: Option<(usize, ColumnRef)> = None;
         // Pending cell-menu / annotation actions, applied after the borrow ends.
@@ -2368,16 +2634,32 @@ impl TlxApp {
                                         _ => None,
                                     };
                                     if let Some(buf) = box_ref {
-                                        let box_resp = ui.add(
-                                            egui::TextEdit::singleline(buf)
-                                                .hint_text("filter\u{2026}")
-                                                .desired_width(f32::INFINITY),
-                                        );
-                                        if box_resp.lost_focus()
-                                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                        {
-                                            col_filter_changed = true;
-                                        }
+                                        ui.horizontal(|ui| {
+                                            // Funnel opens the per-column value
+                                            // picker. Filled when a selection is
+                                            // active on this column, hollow
+                                            // otherwise. Painted, not a glyph -
+                                            // see funnel_icon.
+                                            let active = col_value_filters
+                                                .get(&refc)
+                                                .is_some_and(|v| !v.is_empty());
+                                            if funnel_icon(ui, active)
+                                                .on_hover_text("Filter by value\u{2026}")
+                                                .clicked()
+                                            {
+                                                open_value_filter = Some(refc);
+                                            }
+                                            let box_resp = ui.add(
+                                                egui::TextEdit::singleline(buf)
+                                                    .hint_text("filter\u{2026}")
+                                                    .desired_width(f32::INFINITY),
+                                            );
+                                            if box_resp.lost_focus()
+                                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                            {
+                                                col_filter_changed = true;
+                                            }
+                                        });
                                     }
                                 }
                             }
@@ -2386,14 +2668,22 @@ impl TlxApp {
                 }
             })
             .body(|body| {
-                body.rows(*row_height, n_rows, |mut row| {
+                // One heterogeneous-rows path for both modes: wrap feeds the
+                // per-row heights computed above, plain mode feeds a uniform
+                // height. This keeps a single row-render closure.
+                let heights: Box<dyn Iterator<Item = f32>> = if wrap {
+                    Box::new(wrap_heights.iter().copied())
+                } else {
+                    Box::new(std::iter::repeat(*row_height).take(n_rows))
+                };
+                body.heterogeneous_rows(heights, |mut row| {
                     let view_pos = row.index();
                     let master = rows[view_pos];
                     row.set_selected(selected.contains(&master));
                     let rec = idx.row(master).unwrap_or_default();
-                    // Top tag's colour tints the whole row (semi-transparent),
-                    // matching the Fyne rowTintColor wash.
-                    let tint = session.row_color(master).and_then(|hex| parse_hex_tint(&hex));
+                    // Top tag's colour tints the whole row at the global tag
+                    // opacity, matching the Fyne rowTintColor wash.
+                    let tint = session.row_color(master).and_then(|hex| parse_hex_tint(&hex, tag_opacity));
                     for &refc in &columns {
                         let mut dbl = false;
                         // Is this the Comment cell currently being edited inline?
@@ -2474,15 +2764,16 @@ impl TlxApp {
                             // cell rect (added below), so a right-click lands even
                             // when the pointer is over text - a sensing Label
                             // would otherwise swallow it.
+                            // Wrap mode lets a cell flow onto several lines (the
+                            // row grew to fit); otherwise clip to one line and
+                            // offer the full text on hover.
+                            let mk = |label: egui::Label| if wrap { label.wrap() } else { label.truncate() };
                             let resp = if highlight.is_empty() {
-                                ui.add(egui::Label::new(text).truncate())
+                                ui.add(mk(egui::Label::new(text)))
                             } else {
-                                ui.add(
-                                    egui::Label::new(highlighted_job(text, &highlight, ui.style()))
-                                        .truncate(),
-                                )
+                                ui.add(mk(egui::Label::new(highlighted_job(text, &highlight, ui.style()))))
                             };
-                            if text.len() > 40 {
+                            if !wrap && text.len() > 40 {
                                 resp.on_hover_text(text);
                             }
                             // Sensing overlay over this cell's full rect, drawn
@@ -2768,27 +3059,32 @@ impl TlxApp {
                 added: vec![false; n],
                 cands,
                 open: true,
+                pinned: true,
             });
         }
         if let Some((col, text)) = filter_5min {
             self.filter_plus_minus_5min(col, &text);
         }
         if let Some(text) = add_artifact {
-            self.note_add(NoteKind::Artifact, &text);
-            self.status = "Added to Artifacts.".to_string();
+            if self.note_add(NoteKind::Artifact, &text) {
+                self.status = "Added to Artifacts.".to_string();
+            }
         }
         // Artifacts added from the sticky cell menu (menu stays open, so this
         // can carry several in one frame).
         if !sticky_add.is_empty() {
-            let n = sticky_add.len();
-            for (_, _, text) in &sticky_add {
-                self.note_add(NoteKind::Artifact, text);
+            let n = sticky_add
+                .iter()
+                .filter(|(_, _, text)| self.note_add(NoteKind::Artifact, text))
+                .count();
+            if n > 0 {
+                self.status = format!("Added {n} to Artifacts.");
             }
-            self.status = format!("Added {n} to Artifacts.");
         }
         if let Some(text) = add_time {
-            self.note_add(NoteKind::Time, &text);
-            self.status = "Added to Times.".to_string();
+            if self.note_add(NoteKind::Time, &text) {
+                self.status = "Added to Times.".to_string();
+            }
         }
         if let Some((master, refc)) = dbl_click_cell {
             if self.master_mode {
@@ -2812,7 +3108,154 @@ impl TlxApp {
         if let Some(col) = header_clear {
             self.clear_column_filter(col);
         }
+        if let Some(col) = open_value_filter {
+            self.open_value_picker(col);
+        }
         if col_filter_changed {
+            self.apply_filter();
+        }
+    }
+
+    /// Open the per-column value picker for `col`: gather the distinct cell
+    /// values currently visible in that column (capped), seed the working
+    /// selection from any filter already applied to the column, and show the
+    /// editor window. Toggling it on the same column closes it.
+    fn open_value_picker(&mut self, col: ColumnRef) {
+        if self.value_popup.as_ref().is_some_and(|p| p.col == col) {
+            self.value_popup = None;
+            return;
+        }
+        let Some(idx) = self.idx.clone() else { return };
+        // Cap the distinct set so a view with millions of unique cells can't
+        // build an unusable list (or thrash memory). Once the cap is hit the
+        // scan stops and the UI flags the list as partial.
+        const CAP: usize = 2000;
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        let mut truncated = false;
+        for &master in &self.rows {
+            let val = match col {
+                COL_COMMENT => self.session.comment(master),
+                c if c >= 0 => idx
+                    .row(master)
+                    .ok()
+                    .and_then(|r| r.get(c as usize).cloned())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            if !set.contains(&val) {
+                if set.len() >= CAP {
+                    truncated = true;
+                    break;
+                }
+                set.insert(val);
+            }
+        }
+        let checked: BTreeSet<String> = self
+            .col_value_filters
+            .get(&col)
+            .map(|v| v.iter().cloned().collect())
+            .unwrap_or_default();
+        let title = match col {
+            COL_COMMENT => "Comment".to_string(),
+            c => self.col_display_name(c as usize),
+        };
+        self.value_popup = Some(ValueFilterPopup {
+            col,
+            title,
+            distinct: set.into_iter().collect(),
+            truncated,
+            checked,
+            search: String::new(),
+        });
+    }
+
+    /// Render the per-column value picker window, if open. Ticked values are the
+    /// working selection; Apply commits them as the column's value filter and
+    /// re-runs the filter, Clear drops the column's filter entirely. Closing the
+    /// window (X) discards the in-progress selection.
+    fn value_filter_window(&mut self, ctx: &egui::Context) {
+        if self.value_popup.is_none() {
+            return;
+        }
+        let mut open = true;
+        let mut apply = false;
+        let mut do_clear = false;
+        let popup = self.value_popup.as_mut().unwrap();
+        egui::Window::new(format!("Filter: {}", popup.title))
+            .id(egui::Id::new("value-filter-window"))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(300.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut popup.search)
+                        .hint_text("search values\u{2026}")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("All").clicked() {
+                        for v in &popup.distinct {
+                            popup.checked.insert(v.clone());
+                        }
+                    }
+                    if ui.button("None").clicked() {
+                        popup.checked.clear();
+                    }
+                    ui.label(format!("{} selected", popup.checked.len()));
+                });
+                if popup.truncated {
+                    ui.weak(format!(
+                        "First {} values; narrow the view to see more.",
+                        popup.distinct.len()
+                    ));
+                }
+                ui.separator();
+                let needle = popup.search.to_lowercase();
+                egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for v in &popup.distinct {
+                        if !needle.is_empty() && !v.to_lowercase().contains(&needle) {
+                            continue;
+                        }
+                        let label = if v.is_empty() { "(blank)".to_string() } else { v.clone() };
+                        let mut on = popup.checked.contains(v);
+                        if ui.checkbox(&mut on, label).changed() {
+                            if on {
+                                popup.checked.insert(v.clone());
+                            } else {
+                                popup.checked.remove(v);
+                            }
+                        }
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Clear filter").clicked() {
+                        do_clear = true;
+                    }
+                });
+            });
+
+        if !open {
+            self.value_popup = None;
+            return;
+        }
+        if apply {
+            let popup = self.value_popup.take().unwrap();
+            let col = popup.col;
+            let vals: Vec<String> = popup.checked.into_iter().collect();
+            if vals.is_empty() {
+                self.col_value_filters.remove(&col);
+            } else {
+                self.col_value_filters.insert(col, vals);
+            }
+            self.apply_filter();
+        } else if do_clear {
+            let col = self.value_popup.take().unwrap().col;
+            self.col_value_filters.remove(&col);
             self.apply_filter();
         }
     }
@@ -2860,6 +3303,10 @@ impl TlxApp {
                 self.col_filters[c as usize].clear();
             }
             _ => {}
+        }
+        self.col_value_filters.remove(&col);
+        if self.value_popup.as_ref().is_some_and(|p| p.col == col) {
+            self.value_popup = None;
         }
         self.builder_conds.retain(|r| r.column != col);
         self.apply_filter();
@@ -2936,7 +3383,7 @@ impl TlxApp {
                 let vctx = ui.ctx().clone();
                 ui.horizontal(|ui| {
                     ui.strong(&title);
-                    if ui.toggle_value(pinned_ref, "\u{1F4CC} Pin on top").changed() {
+                    if ui.toggle_value(pinned_ref, "\u{1F4CC} Pin").changed() {
                         let level = if *pinned_ref {
                             egui::WindowLevel::AlwaysOnTop
                         } else {
@@ -3047,11 +3494,12 @@ impl TlxApp {
             }
         }
         for (kind, text) in note_adds {
-            self.note_add(kind, &text);
-            self.status = match kind {
-                NoteKind::Artifact => "Added to Artifacts.".to_string(),
-                NoteKind::Time => "Added to Times.".to_string(),
-            };
+            if self.note_add(kind, &text) {
+                self.status = match kind {
+                    NoteKind::Artifact => "Added to Artifacts.".to_string(),
+                    NoteKind::Time => "Added to Times.".to_string(),
+                };
+            }
         }
         if self.popouts.iter().any(|p| !p.open) {
             self.popouts.retain(|p| p.open);
@@ -3065,9 +3513,12 @@ impl TlxApp {
     fn render_candidate_review(&mut self, ctx: &egui::Context) {
         let Some(review) = self.candidate_review.as_mut() else { return };
         let vp_id = egui::ViewportId::from_hash_of("candidate-review");
-        let builder = egui::ViewportBuilder::default()
+        let mut builder = egui::ViewportBuilder::default()
             .with_title(&review.title)
             .with_inner_size([480.0, 560.0]);
+        if review.pinned {
+            builder = builder.with_always_on_top();
+        }
         // Candidates to add this frame (index into review.cands).
         let mut to_add: Vec<usize> = Vec::new();
         let mut add_all = false;
@@ -3075,11 +3526,20 @@ impl TlxApp {
         let cands = &review.cands;
         let added = &mut review.added;
         let open_ref = &mut review.open;
+        let pinned_ref = &mut review.pinned;
         ctx.show_viewport_immediate(vp_id, builder, |ui, _class| {
             let vctx = ui.ctx().clone();
             ui.horizontal(|ui| {
                 ui.strong(&title);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.toggle_value(pinned_ref, "\u{1F4CC} Pin").changed() {
+                        let level = if *pinned_ref {
+                            egui::WindowLevel::AlwaysOnTop
+                        } else {
+                            egui::WindowLevel::Normal
+                        };
+                        vctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+                    }
                     let remaining = added.iter().filter(|a| !**a).count();
                     if ui
                         .add_enabled(remaining > 0, egui::Button::new(format!("Add all remaining ({remaining})")))
@@ -3126,14 +3586,17 @@ impl TlxApp {
             to_add.iter().map(|&i| (i, review.cands[i].text.clone())).collect()
         };
         let closing = !review.open;
+        let mut added = 0usize;
         for (i, text) in &picks {
-            self.note_add(NoteKind::Artifact, text);
+            if self.note_add(NoteKind::Artifact, text) {
+                added += 1;
+            }
             if let Some(r) = self.candidate_review.as_mut() {
                 r.added[*i] = true;
             }
         }
-        if !picks.is_empty() {
-            self.status = format!("Added {} to Artifacts.", picks.len());
+        if added > 0 {
+            self.status = format!("Added {added} to Artifacts.");
         }
         if closing {
             self.candidate_review = None;
@@ -3241,11 +3704,12 @@ impl TlxApp {
         // menu reads it after the caret has collapsed).
         self.details_sel = sel_store;
         if let Some((kind, text)) = note_add {
-            self.note_add(kind, &text);
-            self.status = match kind {
-                NoteKind::Artifact => "Added to Artifacts.".to_string(),
-                NoteKind::Time => "Added to Times.".to_string(),
-            };
+            if self.note_add(kind, &text) {
+                self.status = match kind {
+                    NoteKind::Artifact => "Added to Artifacts.".to_string(),
+                    NoteKind::Time => "Added to Times.".to_string(),
+                };
+            }
         }
     }
 
@@ -3357,7 +3821,7 @@ impl TlxApp {
                     if ui.button("\u{21A9} Dock").clicked() {
                         dock_back = true;
                     }
-                    if ui.toggle_value(&mut pinned, "\u{1F4CC} Pin on top").changed() {
+                    if ui.toggle_value(&mut pinned, "\u{1F4CC} Pin").changed() {
                         let level = if pinned {
                             egui::WindowLevel::AlwaysOnTop
                         } else {
@@ -3709,11 +4173,27 @@ impl TlxApp {
         // dragged outside the main window and onto another monitor. Same pattern
         // as the cell pop-out and candidate-review windows.
         let vp_id = egui::ViewportId::from_hash_of("ioc-manager");
-        let builder = egui::ViewportBuilder::default()
+        let mut builder = egui::ViewportBuilder::default()
             .with_title("IOC lists")
             .with_inner_size([560.0, 360.0]);
+        if self.ioc_pinned {
+            builder = builder.with_always_on_top();
+        }
+        // Copied out so the closure can still borrow the rest of `self`; written
+        // back after the viewport renders.
+        let mut pinned = self.ioc_pinned;
         ctx.show_viewport_immediate(vp_id, builder, |ui, _class| {
             let vctx = ui.ctx().clone();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.toggle_value(&mut pinned, "\u{1F4CC} Pin").changed() {
+                    let level = if pinned {
+                        egui::WindowLevel::AlwaysOnTop
+                    } else {
+                        egui::WindowLevel::Normal
+                    };
+                    vctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+                }
+            });
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(170.0);
@@ -3789,6 +4269,7 @@ impl TlxApp {
                 open = false;
             }
         });
+        self.ioc_pinned = pinned;
 
         if let Some(i) = select {
             // Persist the current edit before switching away.
@@ -4083,13 +4564,33 @@ impl TlxApp {
         }
     }
 
-    fn note_add(&mut self, kind: NoteKind, text: &str) {
+    /// Add a note for `kind`, unless an entry with the same text (trimmed,
+    /// case-insensitive) already exists - duplicates are refused and the
+    /// existing entry is set to flash instead. Returns true when a new note was
+    /// actually added.
+    fn note_add(&mut self, kind: NoteKind, text: &str) -> bool {
+        let trimmed = text.trim();
+        if let Some((id, _, _)) = self
+            .note_list(kind)
+            .into_iter()
+            .find(|(_, t, _)| t.trim().eq_ignore_ascii_case(trimmed))
+        {
+            // Already present: flash the existing row (start resolved at render)
+            // and add nothing.
+            self.note_flash = Some((kind, id, None));
+            return false;
+        }
         if let (Some(case), Some(tl)) = (self.case.as_mut(), self.cur_timeline.as_ref()) {
             if let Err(e) = case.add_note(tl.id, note_kind_str(kind), text) {
                 self.status = format!("Add note: {e}");
+                return false;
             }
+            true
         } else if !self.path.is_empty() {
             self.prefs.add_note(&self.path, kind, text);
+            true
+        } else {
+            false
         }
     }
 
@@ -4134,18 +4635,46 @@ impl TlxApp {
             BeginEdit(NoteKind, i64, String),
             CommitEdit(NoteKind, i64),
             CancelEdit,
+            OpenExport(String, String),
+            FilterTimeWindow(String),
         }
         let mut action: Option<NoteAction> = None;
         let editing = self.editing_note;
+
+        // Duplicate-add flash: a pending flash gets its start time on the first
+        // render after the attempt; three sine humps over FLASH_DUR read as a
+        // "couple of flashes" on the existing entry.
+        const FLASH_DUR: f64 = 0.9;
+        let now = ui.input(|i| i.time);
+        if let Some((_, _, start)) = &mut self.note_flash {
+            if start.is_none() {
+                *start = Some(now);
+            }
+        }
+        let flash = self.note_flash;
 
         for (kind, label, buf_is_artifact) in [
             (NoteKind::Artifact, "Artifacts", true),
             (NoteKind::Time, "Times", false),
         ] {
-            ui.strong(label);
             let notes = self.note_list(kind);
+            ui.horizontal(|ui| {
+                ui.strong(label);
+                // Export list: open every entry as one copyable block of text.
+                // Disabled when the list is empty.
+                ui.add_enabled_ui(!notes.is_empty(), |ui| {
+                    if ui.small_button("Export list").on_hover_text("Open all entries as copyable text").clicked() {
+                        let joined = notes
+                            .iter()
+                            .map(|(_, t, _)| t.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        action = Some(NoteAction::OpenExport(label.to_string(), joined));
+                    }
+                });
+            });
             for (id, text, done) in &notes {
-                ui.horizontal(|ui| {
+                let ir = ui.horizontal(|ui| {
                     if editing == Some((kind, *id)) {
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.editing_note_buf).desired_width(180.0),
@@ -4181,10 +4710,38 @@ impl TlxApp {
                     if ui.small_button("\u{1F50D}").on_hover_text("Filter to this entry").clicked() {
                         action = Some(NoteAction::FilterTo(text.clone()));
                     }
+                    // Times entries can filter to a ±5 min window, the same as the
+                    // grid's right-click on a timestamp cell.
+                    if kind == NoteKind::Time
+                        && ui
+                            .small_button("\u{00B1}5m")
+                            .on_hover_text("Filter \u{00B1}5 min around this time")
+                            .clicked()
+                    {
+                        action = Some(NoteAction::FilterTimeWindow(text.clone()));
+                    }
                     if ui.small_button("\u{00D7}").on_hover_text("Delete").clicked() {
                         action = Some(NoteAction::Delete(kind, *id));
                     }
                 });
+                // Overlay a pulsing wash on the entry a duplicate add just
+                // targeted, so the eye is drawn to the copy that already exists.
+                if let Some((fk, fid, Some(fs))) = flash {
+                    if fk == kind && fid == *id {
+                        let elapsed = now - fs;
+                        if elapsed < FLASH_DUR {
+                            let hump =
+                                ((elapsed / FLASH_DUR) * std::f64::consts::PI * 3.0).sin().abs();
+                            let a = (hump * 150.0) as u8;
+                            ui.painter().rect_filled(
+                                ir.response.rect,
+                                3.0,
+                                egui::Color32::from_rgba_unmultiplied(255, 210, 0, a),
+                            );
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                }
             }
             let buf = if buf_is_artifact { &mut self.new_artifact } else { &mut self.new_time };
             let mut submit = false;
@@ -4235,7 +4792,59 @@ impl TlxApp {
                 self.filter_text = format!("\"{escaped}\"");
                 self.apply_filter();
             }
+            Some(NoteAction::OpenExport(title, text)) => {
+                self.notes_export = Some((title, text));
+            }
+            Some(NoteAction::FilterTimeWindow(text)) => {
+                // No column is attached to a Times entry, so target the index's
+                // primary time column, then reuse the grid's ±5 min filter.
+                match self.idx.as_ref().and_then(|idx| timecol::detect_time_column(idx)) {
+                    Some(col) => self.filter_plus_minus_5min(col, &text),
+                    None => self.status = "No time column to filter on.".to_string(),
+                }
+            }
             None => {}
+        }
+
+        // Drop the flash once its run is over so it fires just once per attempt.
+        if let Some((_, _, Some(fs))) = self.note_flash {
+            if now - fs >= FLASH_DUR {
+                self.note_flash = None;
+            }
+        }
+    }
+
+    /// Render the "Export list" window for a notes list, if open: every entry as
+    /// one block of text in a scrollable multiline box, plus a copy button. The
+    /// text is editable so the user can trim before copying; edits are discarded
+    /// on close (the underlying list is untouched).
+    fn notes_export_window(&mut self, ctx: &egui::Context) {
+        let Some((title, text)) = self.notes_export.as_mut() else { return };
+        let mut open = true;
+        egui::Window::new(format!("Export {title}"))
+            .id(egui::Id::new("notes-export-window"))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(440.0)
+            .default_height(360.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Copy to clipboard").clicked() {
+                        ui.ctx().copy_text(text.clone());
+                    }
+                    ui.weak("or select all and copy manually");
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add_sized(
+                        ui.available_size(),
+                        egui::TextEdit::multiline(text).desired_width(f32::INFINITY),
+                    );
+                });
+            });
+        if !open {
+            self.notes_export = None;
         }
     }
 
@@ -4243,11 +4852,34 @@ impl TlxApp {
     /// colour swatch that opens a recolour menu, and a delete button. Ticking
     /// tags drives the OR filter; recolour/delete edit the palette directly.
     fn tags_sidebar(&mut self, ui: &mut egui::Ui) {
+        // Global highlight opacity: one wash strength for every tag, so an
+        // over-saturated colour can be toned down without recolouring. Persisted
+        // once the drag ends (or immediately on a click/keyboard change) rather
+        // than every frame.
+        ui.horizontal(|ui| {
+            ui.label("Highlight opacity");
+            let mut pct = (self.tag_opacity as f32 / 255.0 * 100.0).round() as u8;
+            let resp = ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
+            if resp.changed() {
+                self.tag_opacity = (pct as f32 / 100.0 * 255.0).round() as u8;
+                if !resp.dragged() {
+                    self.prefs.set_tag_opacity(self.tag_opacity);
+                }
+            }
+            if resp.drag_stopped() {
+                self.prefs.set_tag_opacity(self.tag_opacity);
+            }
+        });
+        ui.separator();
+
         let defs = self.session.tag_defs();
         if defs.is_empty() {
             ui.weak("No tags yet.");
             return;
         }
+        // How many rows carry each tag, over the whole dataset (not the
+        // filtered view). Recomputed each frame so it tracks tag edits live.
+        let counts = self.session.tag_counts();
         // Collect edits out of the loop so we don't borrow self mutably while
         // iterating a cloned def list.
         let mut toggle: Option<(String, bool)> = None;
@@ -4282,7 +4914,8 @@ impl TlxApp {
                     },
                 );
                 let mut on = self.tag_checklist.contains(&d.name);
-                if ui.checkbox(&mut on, &d.name).changed() {
+                let label = format!("{} ({})", d.name, counts.get(&d.name).copied().unwrap_or(0));
+                if ui.checkbox(&mut on, label).changed() {
                     toggle = Some((d.name.clone(), on));
                     filter_changed = true;
                 }
@@ -4308,12 +4941,58 @@ impl TlxApp {
             filter_changed = true;
         }
         if let Some(name) = delete {
-            self.tag_checklist.remove(&name);
-            self.edit_palette(|s| s.delete_tag(&name));
-            filter_changed = true;
+            // Don't delete yet: deleting strips the tag from every row and is
+            // irreversible, so stage it for the confirmation modal.
+            self.confirm_tag_delete = Some(name);
         }
         if filter_changed {
             self.apply_filter();
+        }
+    }
+
+    /// Modal that confirms a tag deletion staged from the left pane, spelling
+    /// out that it strips the tag from every tagged row and can't be undone.
+    /// Runs the delete only on an explicit confirm.
+    fn confirm_tag_delete_window(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.confirm_tag_delete.clone() else {
+            return;
+        };
+        let count = self.session.tag_counts().get(&name).copied().unwrap_or(0);
+        let mut proceed = false;
+        let resp = egui::Modal::new(egui::Id::new("confirm-tag-delete")).show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.heading("Delete tag?");
+            ui.add_space(6.0);
+            ui.label(format!(
+                "Deleting \u{201C}{name}\u{201D} removes it from {count} tagged row{}. This can't be undone.",
+                if count == 1 { "" } else { "s" }
+            ));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    proceed = false;
+                    ui.close();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let btn = egui::Button::new(
+                        egui::RichText::new("Delete tag").color(Color32::WHITE),
+                    )
+                    .fill(Color32::from_rgb(176, 42, 42));
+                    if ui.add(btn).clicked() {
+                        proceed = true;
+                    }
+                });
+            });
+        });
+
+        if proceed {
+            self.tag_checklist.remove(&name);
+            self.edit_palette(|s| s.delete_tag(&name));
+            self.apply_filter();
+            self.confirm_tag_delete = None;
+        } else if resp.should_close() {
+            // Backdrop click, Escape, or Cancel: leave the tag untouched.
+            self.confirm_tag_delete = None;
         }
     }
 
@@ -4822,6 +5501,40 @@ fn grip_handle(ui: &mut egui::Ui) {
     }
 }
 
+/// Draw a clickable funnel (filter) icon and return its Response. Painted
+/// rather than drawn from a font glyph so it renders regardless of which fonts
+/// egui bundles - the default fonts have no funnel glyph (and U+22A1 and the
+/// like show as a blank tofu box). `active` fills the funnel to show the column
+/// has a value filter applied; otherwise it is a hollow outline.
+fn funnel_icon(ui: &mut egui::Ui, active: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 18.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 2.0, ui.visuals().widgets.hovered.bg_fill);
+    }
+    let color = if active {
+        ui.visuals().selection.bg_fill
+    } else {
+        ui.visuals().strong_text_color()
+    };
+    let r = rect.shrink(3.0);
+    let cx = r.center().x;
+    let tip_y = r.top() + r.height() * 0.5;
+    // The bowl: a wide top edge converging to a point, then a short stem.
+    let bowl = vec![
+        egui::pos2(r.left(), r.top()),
+        egui::pos2(r.right(), r.top()),
+        egui::pos2(cx, tip_y),
+    ];
+    let stroke = egui::Stroke::new(1.4, color);
+    if active {
+        ui.painter().add(egui::Shape::convex_polygon(bowl, color, egui::Stroke::NONE));
+    } else {
+        ui.painter().add(egui::Shape::convex_polygon(bowl, egui::Color32::TRANSPARENT, stroke));
+    }
+    ui.painter().line_segment([egui::pos2(cx, tip_y), egui::pos2(cx, r.bottom())], stroke);
+    resp
+}
+
 /// Draw a draggable source-column chip (a bordered label) for the export
 /// builder. The chip shows a grab cursor via the enclosing dnd_drag_source.
 fn source_chip(ui: &mut egui::Ui, name: &str) {
@@ -4979,10 +5692,10 @@ fn parse_hex_opaque(hex: &str) -> Option<Color32> {
     Some(Color32::from_rgb(r, g, b))
 }
 
-/// Parse a "#RRGGBB" tag colour into a semi-transparent row tint (alpha 0x40),
-/// the same wash the Fyne app paints behind a tagged row. Returns None for an
-/// unparseable or the "none" sentinel colour.
-fn parse_hex_tint(hex: &str) -> Option<Color32> {
+/// Parse a "#RRGGBB" tag colour into a semi-transparent row tint at the given
+/// alpha, the wash painted behind a tagged row. `alpha` is the global tag
+/// opacity. Returns None for an unparseable or the "none" sentinel colour.
+fn parse_hex_tint(hex: &str, alpha: u8) -> Option<Color32> {
     let h = hex.strip_prefix('#')?;
     if h.len() != 6 {
         return None;
@@ -4990,7 +5703,7 @@ fn parse_hex_tint(hex: &str) -> Option<Color32> {
     let r = u8::from_str_radix(&h[0..2], 16).ok()?;
     let g = u8::from_str_radix(&h[2..4], 16).ok()?;
     let b = u8::from_str_radix(&h[4..6], 16).ok()?;
-    Some(Color32::from_rgba_unmultiplied(r, g, b, 0x40))
+    Some(Color32::from_rgba_unmultiplied(r, g, b, alpha))
 }
 
 /// Quote a column header as a query-grammar field token (mirrors the Go

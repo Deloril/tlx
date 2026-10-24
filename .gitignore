@@ -18,3 +18,6 @@
 
 # Krita autosaves left beside the icon source
 *-autosave.kra
+
+# Local demo scratch area (working copies, generated case DBs)
+/demo/demodemo/
